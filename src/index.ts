@@ -1,27 +1,10 @@
-import { UIElement } from "./ts/UIElement";
-import { MarkdownView } from "./ts/Markdown";
+/**
+ * CrossWord viewer module entry — exposes the shell-integrated {@link CwViewViewer} custom element
+ * for {@link ViewRegistry} (default export = CE constructor; `new X(options)` + `.render()`).
+ */
+export { CwViewViewer, warmViewerMarkdownEngine, TAG } from "./needs-to-API";
+export { CwViewViewer as ViewerView } from "./needs-to-API";
 
-//
-console.log(UIElement);
-console.log(MarkdownView);
+import { CwViewViewer } from "./needs-to-API";
 
-// TODO! Needs to implement `setOptions` per Web Components (on initialize)
-export const createView = (options: any, taskName = "viewer", registry: Map<string, HTMLElement>) => {
-    if (!registry) { registry = new Map(); }
-    // @ts-ignore
-    return registry?.getOrInsertComputed?.(taskName, () => {
-        const mdView = document.createElement("md-view");
-        mdView?.setOptions?.(options);
-        return mdView;
-    });
-}
-
-//
-export const mountView = (container: HTMLElement, options: any | HTMLElement, taskName = "viewer", registry: Map<string, HTMLElement>) => {
-    const element = typeof options === "object" ? createView(options, taskName, registry) : options;
-    container.appendChild(element);
-    return element;
-}
-
-//
-export default createView;
+export default CwViewViewer;

@@ -1,10 +1,10 @@
-// @ts-ignore — canonical typography: `src/styles/ui/_markdown.scss` (veela-backed tokens)
-import styles from "../../styles/ui/_markdown.scss?inline";
+// @ts-ignore — canonical markdown typography lives in `modules/views/markdown-view`
+import styles from "markdown-view-typography?inline";
 import DOMPurify from 'dompurify';
 import { marked, type MarkedExtension } from "marked";
 import { E, H, provide, defineElement, property } from "fest/lure";
 import renderMathInElement from "katex/dist/contrib/auto-render.mjs";
-import UIElement from "../../../../projects/fl.ui/src/ui/base/UIElement";
+import UIElement from "fl-ui/base/UIElement";
 import markedKatex from "marked-katex-extension";
 
 //
