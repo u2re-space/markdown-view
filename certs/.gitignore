@@ -1,0 +1,6 @@
+# Local dev TLS — run `npm run ssl:localhost`.
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12

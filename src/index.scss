@@ -55,10 +55,10 @@
         --view-prose-heading-margin: var(--space-6);
 
         /*
-         * Chrome colors come from @include viewer-view-tokens (layer.view.viewer) using light-dark().
-         * This block only sets layout + color-scheme so UA widgets and light-dark() match the OS.
+         * WHY: No `color-scheme` here — `syncBrowserChromeTheme` / Settings already set `html` color-scheme
+         * + `data-theme`. Forcing `light dark` let UA pick dark while the shell was light (minimal `.app-shell`),
+         * splitting toolbar/markdown from nav.
          */
-        color-scheme: light dark;
 
         /* toolbar control hit targets */
         --view-toolbar-btn-pad-block: 0.4rem;
@@ -71,9 +71,9 @@
 
 @layer viewer.base {
     /*
-     * Shell = column flex. Two shapes:
-     * - Standalone preview: prose is a direct child of .cw-view-viewer-shell.
-     * - cw-view-viewer host: slots live inside .view-viewer__content; prose/pre are light-DOM (assigned to slots).
+     * Shell = column flex. Typical tree: .cw-view-viewer-shell > .view-viewer >
+     *   toolbar + .view-viewer__content[data-viewer-content] > pre[raw] + prose[data-render-target].
+     * Web-component host may use shadow slots; same __content wrapper in both cases.
      */
     .cw-view-viewer-shell {
         --viewer-shell-container-type: inline-size;
@@ -193,13 +193,9 @@
         overscroll-behavior: contain;
     }
 
-    /* Standalone: hide prose in raw mode; hide __content when rendered */
+    /* Standalone: in raw mode hide rendered prose (pre stays in __content). Never hide __content — prose lives inside it. */
     .cw-view-viewer-shell:not(:has(.cw-view-viewer__slot-default))[data-raw] .cw-view-viewer__prose {
         display: none !important;
-    }
-
-    .cw-view-viewer-shell:not(:has(.cw-view-viewer__slot-default)):not([data-raw]) .view-viewer__content {
-        display: none;
     }
 
     .cw-view-viewer-shell:not(:has(.cw-view-viewer__slot-default)):not([data-raw]) .cw-view-viewer__prose {
@@ -518,6 +514,8 @@
         min-inline-size: 0;
         padding: 0;
         background-color: var(--view-bg);
+        block-size: stretch;
+        flex-grow: 1;
 
         &.dragover {
             background-color: rgba(0, 122, 204, 0.05);
@@ -1516,7 +1514,9 @@
         }
 
         // Once a current view is selected, hide non-view siblings (loaders/placeholders).
-        &[data-current-view] > :not([data-view]) {
+        // WHY: Shell boot loaders (`.app-shell__loading`, `[data-shell-loading]`) must stay visible until the shell hides them — same rule as [hidden].
+        &[data-current-view]
+            > :not([data-view]):not(.app-shell__loading):not([data-shell-loading]) {
             display: none !important;
         }
 
@@ -4035,9 +4035,9 @@
 
 @layer layer.view.viewer {
     /*
-     * Shell = column flex. Two shapes:
-     * - Standalone preview: prose is a direct child of .cw-view-viewer-shell.
-     * - cw-view-viewer host: slots live inside .view-viewer__content; prose/pre are light-DOM (assigned to slots).
+     * Shell = column flex. Typical tree: .cw-view-viewer-shell > .view-viewer >
+     *   toolbar + .view-viewer__content[data-viewer-content] > pre[raw] + prose[data-render-target].
+     * Web-component host may use shadow slots; same __content wrapper in both cases.
      */
     .cw-view-viewer-shell {
         --viewer-shell-container-type: inline-size;
@@ -4160,13 +4160,9 @@
         overscroll-behavior: contain;
     }
 
-    /* Standalone: hide prose in raw mode; hide __content when rendered */
+    /* Standalone: in raw mode hide rendered prose (pre stays in __content). Never hide __content — prose lives inside it. */
     .cw-view-viewer-shell:not(:has(.cw-view-viewer__slot-default))[data-raw] .cw-view-viewer__prose {
         display: none !important;
-    }
-
-    .cw-view-viewer-shell:not(:has(.cw-view-viewer__slot-default)):not([data-raw]) .view-viewer__content {
-        display: none;
     }
 
     .cw-view-viewer-shell:not(:has(.cw-view-viewer__slot-default)):not([data-raw]) .cw-view-viewer__prose {

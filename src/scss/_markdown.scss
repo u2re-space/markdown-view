@@ -990,9 +990,18 @@ $_h-sizes: (
         }
     }
 
-    /* Prettylights dark */
+    /* Prettylights dark — follow `html[data-theme]` so code colors match locked light/dark, not OS alone */
+    html[data-theme="dark"] :where(#{tokens.$selectors}):not(.katex, .footnote-ref, .footnote-backref) {
+        .pl-c {  color: #8b949e; }
+        .pl-c1 { color: #79c0ff; }
+        .pl-k { color: #ff7b72; }
+        .pl-s { color: #a5d6ff; }
+        .pl-v { color: #ffa657; }
+        .pl-en { color: #d2a8ff; }
+    }
+
     @media (prefers-color-scheme: dark) {
-        :where(#{tokens.$selectors}):not(.katex, .footnote-ref, .footnote-backref) {
+        html:not([data-theme]) :where(#{tokens.$selectors}):not(.katex, .footnote-ref, .footnote-backref) {
             .pl-c {  color: #8b949e; }
             .pl-c1 { color: #79c0ff; }
             .pl-k { color: #ff7b72; }

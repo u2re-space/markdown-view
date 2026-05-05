@@ -4,6 +4,13 @@
  */
 export { CwViewViewer, warmViewerMarkdownEngine, TAG } from "./needs-to-API";
 export { CwViewViewer as ViewerView } from "./needs-to-API";
+export type { ViewerColorScheme } from "./theme";
+export {
+    coerceViewerColorScheme,
+    normalizeViewerSetColorSchemePayload,
+    resolveViewerColorSchemePreference,
+    resolveViewerOptionsColorScheme
+} from "./theme";
 
 import { CwViewViewer } from "./needs-to-API";
 

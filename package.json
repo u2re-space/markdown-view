@@ -1,7 +1,7 @@
 {
   "name": "markdown-view",
   "version": "1.0.0",
-  "description": "Dedicated/separated view project from CrossWord or FL.UI",
+  "description": "Markdown viewer view module. Dev HTTPS: PEMs in certs/ (npm run ssl:localhost); else plugin-basic-ssl. Port 443 may need privileges — use VIEW_DEV_PORT=8443.",
   "type": "module",
   "main": "./dist/markdown-view.js",
   "module": "./dist/markdown-view.js",
@@ -11,6 +11,8 @@
   },
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "dev:8443": "VIEW_DEV_PORT=8443 vite --host 0.0.0.0",
+    "ssl:localhost": "mkdir -p certs && openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/key.pem -out certs/cert.pem -days 825 -subj '/CN=localhost'",
     "demo": "npm run dev",
     "test": "vite build --config vite.config.js --mode test",
     "build": "vite build --config vite.config.js",

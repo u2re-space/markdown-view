@@ -1,4 +1,127 @@
 {
-    "extends": "../shared/tsconfig.view.json",
-    "include": ["src/**/*.ts", "../shared/**/*.ts"]
+    "include": [
+        "./src/**/*.ts",
+        "./demo/**/*.ts",
+        "./test/*.ts",
+        "./test/**/*.ts",
+        "./*.js"
+    ],
+    "exclude": [
+        "./dist/**/*",
+        "./externals/**/*",
+        "./legacy/**/*.ts",
+        "./src/**/*.js",
+        "./src/**/*.jsx"
+    ],
+    "compilerOptions": {
+        "outDir": "./dist/",
+        "paths": {
+            "@phosphor-icons/core/assets/*": [
+                "../../../node_modules/@phosphor-icons/core/assets/*"
+            ],
+            "views/types": [
+                "../../shared/types.ts"
+            ],
+            "views/registry": [
+                "../../shared/registry.ts"
+            ],
+            "views/apis/channel-actions": [
+                "../../projects/subsystem/src/routing/api/channel-actions.ts"
+            ],
+            "com/config/Settings": [
+                "../../shared/runtime/settings-config.ts"
+            ],
+            "shells/*": [
+                "../../shared/views/*"
+            ],
+            "core/*": [
+                "../../shared/src/*"
+            ],
+            "@shared/*": [
+                "../../shared/*"
+            ],
+            "com/*": [
+                "../../shared/src/*"
+            ],
+            "shared/*": [
+                "../../shared/src/*"
+            ],
+            "fonts/*": [
+                "../../shared/assets/fonts/*"
+            ],
+            "fest/*": [
+                "../../shared/fest/*"
+            ],
+            "fest/dom": [
+                "../../projects/dom.ts/src/index.ts"
+            ],
+            "fest/lure": [
+                "../../projects/lur.e/src/index.ts"
+            ],
+            "fest/object": [
+                "../../projects/object.ts/src/index.ts"
+            ],
+            "fest/core": [
+                "../../projects/core.ts/src/index.ts"
+            ],
+            "fest/icon": [
+                "../../projects/icon.ts/src/index.ts"
+            ],
+            "fest/fl-ui": [
+                "../../projects/fl.ui/src/index.ts"
+            ],
+            "fest/image": [
+                "../../projects/image.ts/src/index.ts"
+            ],
+            "fest/ui": [
+                "../../projects/fl.ui/src/index.ts"
+            ],
+            "fest/uniform": [
+                "../../projects/uniform.ts/src/index.ts"
+            ],
+            "fest/polyfill/*": [
+                "../../projects/shared/fest/polyfill/*"
+            ],
+            "polyfill/*": [
+                "../../projects/shared/fest/polyfill/*"
+            ],
+            "veela-lib": [
+                "../../projects/veela.css/src/scss/index.scss"
+            ],
+            "veela-lib/*": [
+                "../../projects/veela.css/src/scss/*"
+            ]
+        },
+        "target": "ESNext",
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "lib": [
+            "ESNext",
+            "DOM",
+            "WebWorker"
+        ],
+        "esModuleInterop": true,
+        "strict": true,
+        "forceConsistentCasingInFileNames": true,
+        "allowJs": true,
+        "allowArbitraryExtensions": true,
+        "allowSyntheticDefaultImports": true,
+        "allowUmdGlobalAccess": true,
+        "allowUnreachableCode": true,
+        "allowUnusedLabels": true,
+        "noImplicitAny": false,
+        "declaration": false,
+        "noImplicitThis": false,
+        "inlineSources": true,
+        "inlineSourceMap": true,
+        "sourceMap": false,
+        "typeRoots": [
+            "plugins/global.d.ts"
+        ],
+        "experimentalDecorators": true,
+        "noEmit": true,
+        "noEmitOnError": true,
+        "noEmitHelpers": true
+    },
+    "compileOnSave": false
 }

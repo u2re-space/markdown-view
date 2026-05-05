@@ -13,6 +13,17 @@ import { loadAsAdopted, removeAdopted } from "fest/dom";
 import DOMPurify from 'dompurify';
 import renderMathInElement from "katex/dist/contrib/auto-render.mjs";
 import { ensureStyleSheet, reinitializeRegistry } from "fest/icon";
+import type { BaseViewOptions, ShellContext, ViewLifecycle, ViewOptions } from "views/types";
+import { createViewState } from "views/types";
+import { createViewConstructor } from "views/registry";
+import { ViewerChannelAction, ExplorerChannelAction } from "views/apis/channel-actions";
+import { loadSettings } from "com/config/Settings";
+import {
+    type ViewerColorScheme,
+    normalizeViewerSetColorSchemePayload,
+    resolveViewerColorSchemePreference,
+    resolveViewerOptionsColorScheme
+} from "./theme";
 
 // Import fest/fl-ui (e.g. shared markdown utilities elsewhere)
 import "fest/icon";
@@ -206,6 +217,8 @@ const DEFAULT_CONTENT = `# This is content`;
 // ============================================================================
 
 export interface ViewerOptions extends BaseViewOptions {
+    /** Light / dark / system — also read from `params.colorScheme` / `params.theme` when unset. */
+    colorScheme?: ViewerColorScheme;
     /** Initial markdown content */
     initialContent?: string;
     /** Filename for display */
@@ -256,6 +269,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private stateManager = createViewState<ViewerState>(STORAGE_KEY);
     private _sheet: CSSStyleSheet | null = null;
     private pasteController: AbortController | null = null;
+    /** Whole-page drag/drop when the viewer is standalone (captures misses on shell padding). */
+    private windowDnDController: AbortController | null = null;
     private isViewVisible = false;
     private isPointerInView = false;
     private sourceUrl: string | null = null;
@@ -294,6 +309,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private markdownSettingsPromise: Promise<void> | null = null;
     /** Table of contents for rendered markdown; persisted for the tab session. */
     private outlineVisible = false;
+    /** Document theme lock for `html[data-theme]` (see `index.scss` / `theme.ts`). */
+    private viewerColorScheme: ViewerColorScheme = "system";
+    private documentThemeSnapshot: { prevAttr: string | null; prevInlineCs: string } | null = null;
 
     lifecycle: ViewLifecycle = {
         onMount: () => this.onMount(),
@@ -316,6 +334,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             this.outlineVisible = false;
         }
 
+        this.syncViewerColorSchemeFromOptions();
+
         // Load initial content
         const savedState = this.stateManager.load();
         this.contentRef.value = options.initialContent || savedState?.content || DEFAULT_CONTENT;
@@ -335,6 +355,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             this.shellContext = options.shellContext || this.shellContext;
             this.applyRouteParams(options.params);
         }
+        this.syncViewerColorSchemeFromOptions();
 
         this._sheet = loadAsAdopted(style) as CSSStyleSheet;
         this.element = this.createViewerShellElement();
@@ -356,6 +377,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             this.saveState();
         });
 
+        this.refreshDocumentTheme();
         return this.element;
     }
 
@@ -369,6 +391,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             this.shellContext = options.shellContext || this.shellContext;
             this.applyRouteParams(options.params);
         }
+        this.syncViewerColorSchemeFromOptions();
 
         this.slotProjectingHost = host;
         this._sheet ??= loadAsAdopted(style) as CSSStyleSheet;
@@ -397,6 +420,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             }
             this.saveState();
         });
+
+        this.refreshDocumentTheme();
     }
 
     getToolbar(): HTMLElement | null {
@@ -427,9 +452,60 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         return this.contentRef.value;
     }
 
+    /** Imperative theme — persists on view options; drives `html[data-theme]` for viewer CSS. */
+    setViewerColorScheme(mode: ViewerColorScheme): void {
+        this.viewerColorScheme = mode;
+        (this.options as ViewerOptions).colorScheme = mode;
+        this.refreshDocumentTheme();
+    }
+
     // ========================================================================
     // PRIVATE METHODS
     // ========================================================================
+
+    private refreshDocumentTheme(): void {
+        if (typeof document === "undefined") return;
+        this.applyViewerDocumentTheme(this.viewerColorScheme);
+    }
+
+    private applyViewerDocumentTheme(mode: ViewerColorScheme): void {
+        const html = document.documentElement;
+        /*
+         * WHY: Default `system` must NOT re-resolve only from `prefers-color-scheme` on <html>.
+         * Shell chrome (e.g. minimal `.app-shell[data-theme]`) follows Settings + `syncBrowserChromeTheme`;
+         * overwriting `documentElement` here caused pinned light + OS-dark splits — markdown stayed dark and
+         * toolbar missed `html[data-theme="light"]` fixes (low contrast).
+         * OS/auto updates already flow through `ShellBase.applyTheme` when appearance.theme is `auto`.
+         */
+        if (mode === "system") return;
+        if (!this.documentThemeSnapshot) {
+            this.documentThemeSnapshot = {
+                prevAttr: html.getAttribute("data-theme"),
+                prevInlineCs: html.style.getPropertyValue("color-scheme")
+            };
+        }
+        const resolved = resolveViewerColorSchemePreference(mode);
+        html.setAttribute("data-theme", resolved);
+        html.style.setProperty("color-scheme", resolved);
+    }
+
+    private restoreViewerDocumentTheme(): void {
+        const snap = this.documentThemeSnapshot;
+        this.documentThemeSnapshot = null;
+        if (!snap || typeof document === "undefined") return;
+        const html = document.documentElement;
+        if (snap.prevAttr === null || snap.prevAttr === "") html.removeAttribute("data-theme");
+        else html.setAttribute("data-theme", snap.prevAttr);
+        const prevCs = snap.prevInlineCs.trim();
+        if (!prevCs) html.style.removeProperty("color-scheme");
+        else html.style.setProperty("color-scheme", snap.prevInlineCs);
+    }
+
+    /** Prefer `options.colorScheme` over `params.theme` / `params.colorScheme` (see {@link resolveViewerOptionsColorScheme}). */
+    private syncViewerColorSchemeFromOptions(): void {
+        const s = resolveViewerOptionsColorScheme(this.options as ViewerOptions);
+        if (s) this.viewerColorScheme = s;
+    }
 
     private createViewerShellElement(): HTMLElement {
         return H`
@@ -764,7 +840,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
     }
 
-    private applyRouteParams(params?: Record<string, string>): void {
+    private applyRouteParams(params?: Record<string, unknown>): void {
         if (!params) return;
         const detachKey = String(params.detachKey || "").trim();
         if (detachKey) {
@@ -1088,14 +1164,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 const mark = shell ?? content;
                 mark?.classList.remove("dragover");
             });
-
-            dropZone.addEventListener("drop", (e) => {
-                e.preventDefault();
-                const mark = shell ?? content;
-                mark?.classList.remove("dragover");
-                this.handleFileDrop(e as DragEvent);
-            });
         }
+
+        this.bindWindowMarkdownDnD(shell ?? content);
 
         // Setup paste handling
         this.pasteController?.abort();
@@ -1134,7 +1205,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private handleOpen(): void {
         const input = document.createElement("input");
         input.type = "file";
-        input.accept = ".md,.markdown,.txt,text/markdown,text/plain";
+        input.accept = ".md,.markdown,.mdown,.mkd,.mkdn,.mdtxt,.mdtext,.txt,text/markdown,text/plain,text/md";
         input.onchange = async () => {
             const file = input.files?.[0];
             if (file) {
@@ -1335,15 +1406,103 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private handleFileDrop(e: DragEvent): void {
-        const file = e.dataTransfer?.files?.[0];
-        if (file && (file.type.includes("text") || file.name.endsWith(".md"))) {
-            file.text().then(content => {
-                this.setContent(content);
-                this.showMessage(`Loaded ${file.name}`);
-            }).catch(() => {
-                this.showMessage("Failed to read dropped file");
-            });
+        void this.ingestDroppedFiles(e.dataTransfer);
+    }
+
+    /** True when this viewer should own global file drop / paste (demo or active shell tab). */
+    private viewerAcceptsGlobalInput(): boolean {
+        if (!this.isViewVisible) return false;
+        if (
+            this.shellContext?.navigationState?.currentView &&
+            this.shellContext.navigationState.currentView !== this.id
+        ) {
+            return false;
         }
+        return true;
+    }
+
+    private bindWindowMarkdownDnD(highlightEl: HTMLElement | null): void {
+        this.windowDnDController?.abort();
+        this.windowDnDController = new AbortController();
+        const signal = this.windowDnDController.signal;
+        const fileDrag = (e: DragEvent): boolean => {
+            if (!this.viewerAcceptsGlobalInput()) return false;
+            const types = e.dataTransfer?.types;
+            if (!types || !Array.from(types).includes("Files")) return false;
+            const t = e.target as HTMLElement | null;
+            if (t?.closest("input, textarea, select, [contenteditable='true']")) return false;
+            return true;
+        };
+        window.addEventListener(
+            "dragover",
+            (e) => {
+                if (!fileDrag(e)) return;
+                e.preventDefault();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+                highlightEl?.classList.add("dragover");
+            },
+            { signal, capture: true }
+        );
+        window.addEventListener(
+            "drop",
+            (e) => {
+                if (!fileDrag(e)) return;
+                e.preventDefault();
+                e.stopPropagation();
+                highlightEl?.classList.remove("dragover");
+                this.handleFileDrop(e as DragEvent);
+            },
+            { signal, capture: true }
+        );
+    }
+
+    private async ingestDroppedFiles(dt: DataTransfer | null | undefined): Promise<void> {
+        if (!dt) return;
+        const fileList = dt.files;
+        if (fileList && fileList.length > 0) {
+            const pick = this.pickMarkdownOrTextFile(Array.from(fileList));
+            if (!pick) {
+                this.showMessage("Drop a .md or text file");
+                return;
+            }
+            try {
+                const content = await pick.text();
+                this.setContent(content, pick.name, null);
+                this.showMessage(`Loaded ${pick.name}`);
+            } catch {
+                this.showMessage("Failed to read dropped file");
+            }
+            return;
+        }
+
+        const uri =
+            (dt.getData("text/uri-list") || "").split(/\r?\n/).find((l) => l.trim() && !l.trim().startsWith("#"))?.trim() ||
+            dt.getData("text/plain")?.trim();
+        if (uri && /^https?:\/\//i.test(uri) && this.isLikelyMarkdownUrl(uri)) {
+            const ok = await this.openMarkdownFromUrl(uri);
+            if (ok) this.showMessage("Opened dropped link");
+            else this.showMessage("Could not load dropped URL");
+            return;
+        }
+        if (uri && this.isLikelyMarkdownUrl(uri)) {
+            this.showMessage("Dropped link must be http(s) to load in the browser");
+        }
+    }
+
+    private pickMarkdownOrTextFile(files: File[]): File | null {
+        const scored = [...files].sort((a, b) => {
+            const am = this.isMarkdownFilename(a.name) ? 0 : 1;
+            const bm = this.isMarkdownFilename(b.name) ? 0 : 1;
+            return am - bm || a.name.localeCompare(b.name);
+        });
+        for (const f of scored) {
+            if (this.isTextLikeFile(f)) return f;
+        }
+        return null;
+    }
+
+    private isMarkdownFilename(name: string): boolean {
+        return /\.(?:md|markdown|mdown|mkd|mkdn|mdtxt|mdtext)$/i.test((name || "").trim());
     }
 
     private async handlePaste(e: ClipboardEvent): Promise<void> {
@@ -1368,18 +1527,11 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
      * Mobile / no-keyboard: read clipboard via Async Clipboard API (user gesture from toolbar tap).
      */
     private async handlePasteFromToolbar(): Promise<void> {
-        if (!this.element || !this.isViewVisible) {
+        if (!this.element || !this.viewerAcceptsGlobalInput()) {
             this.showMessage("Open the Viewer tab to paste");
             return;
         }
         if (document.visibilityState !== "visible") return;
-        if (
-            this.shellContext?.navigationState?.currentView &&
-            this.shellContext.navigationState.currentView !== this.id
-        ) {
-            this.showMessage("Open the Viewer tab to paste");
-            return;
-        }
 
         try {
             const { files, text } = await this.readSystemClipboard();
@@ -1576,6 +1728,11 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         return [
             ".md",
             ".markdown",
+            ".mdown",
+            ".mkd",
+            ".mkdn",
+            ".mdtxt",
+            ".mdtext",
             ".txt",
             ".json",
             ".xml",
@@ -1591,9 +1748,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private shouldHandlePaste(e: ClipboardEvent): boolean {
-        if (!this.element || !this.isViewVisible) return false;
+        if (!this.element || !this.viewerAcceptsGlobalInput()) return false;
         if (document.visibilityState !== "visible") return false;
-        if (this.shellContext?.navigationState?.currentView && this.shellContext.navigationState.currentView !== this.id) return false;
 
         const target = e.target as HTMLElement | null;
         if (!target) return false;
@@ -2019,15 +2175,19 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.applyCustomStyles();
         void this.markdownSettingsPromise;
         this.isViewVisible = true;
+        this.refreshDocumentTheme();
     }
 
     private onUnmount(): void {
         console.log("[Viewer] Unmounting");
+        this.restoreViewerDocumentTheme();
         this.saveState();
         this.isViewVisible = false;
         this.isPointerInView = false;
         this.pasteController?.abort();
         this.pasteController = null;
+        this.windowDnDController?.abort();
+        this.windowDnDController = null;
         if (this.customSheet) {
             removeAdopted(this.customSheet);
             this.customSheet = null;
@@ -2042,6 +2202,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.applyCustomStyles();
         this.markdownSettingsPromise = this.loadMarkdownSettings();
         this.isViewVisible = true;
+        this.refreshDocumentTheme();
         console.log("[Viewer] Shown");
     }
 
@@ -2072,6 +2233,12 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 : {};
 
         switch (action) {
+            case ViewerChannelAction.SetColorScheme:
+            case ExplorerChannelAction.SetColorScheme: {
+                const next = normalizeViewerSetColorSchemePayload(p) ?? "system";
+                this.setViewerColorScheme(next);
+                return undefined;
+            }
             case ViewerChannelAction.AttachToWorkcenter:
                 return this.attachCurrentContentToWorkcenter().then(() => undefined);
             case ViewerChannelAction.OpenUrl:
@@ -2105,7 +2272,15 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     // ========================================================================
 
     canHandleMessage(messageType: string): boolean {
-        return ["content-view", "content-load", "markdown-content", "content-share", "share-target-input"].includes(messageType);
+        return [
+            "content-view",
+            "content-load",
+            "markdown-content",
+            "content-share",
+            "share-target-input",
+            ViewerChannelAction.SetColorScheme,
+            ExplorerChannelAction.SetColorScheme
+        ].includes(messageType);
     }
 
     async handleMessage(message: unknown): Promise<void> {
@@ -2121,8 +2296,23 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 src?: string;
                 file?: File;
                 files?: File[];
+                colorScheme?: unknown;
+                scheme?: unknown;
+                theme?: unknown;
             };
         };
+
+        if (
+            msg.type === ViewerChannelAction.SetColorScheme ||
+            msg.type === ExplorerChannelAction.SetColorScheme
+        ) {
+            const next =
+                normalizeViewerSetColorSchemePayload(
+                    msg.data?.colorScheme ?? msg.data?.scheme ?? msg.data?.theme ?? msg.data
+                ) ?? "system";
+            this.setViewerColorScheme(next);
+            return;
+        }
 
         if (msg.data?.text || msg.data?.content) {
             const content = msg.data.text || msg.data.content || "";
