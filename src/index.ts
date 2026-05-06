@@ -1,6 +1,9 @@
 /**
  * CrossWord viewer module entry — exposes the shell-integrated {@link CwViewViewer} custom element
- * for {@link ViewRegistry} (default export = CE constructor; `new X(options)` + `.render()`).
+ * (default export = CE constructor; `new X(options)` + `.render()`).
+ *
+ * Shell / window ids: primary **`viewer`**, aliases **`markdown`**, **`markdown-view`**, … — see
+ * `shells/window-frame` `normalizeMarkdownViewWindowId`.
  */
 export { CwViewViewer, warmViewerMarkdownEngine, TAG } from "./needs-to-API";
 export { CwViewViewer as ViewerView } from "./needs-to-API";
