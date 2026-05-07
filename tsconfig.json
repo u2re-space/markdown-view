@@ -31,24 +31,6 @@
             "com/config/Settings": [
                 "../../shared/runtime/settings-config.ts"
             ],
-            "shells/*": [
-                "../../shared/views/*"
-            ],
-            "core/*": [
-                "../../shared/src/*"
-            ],
-            "@shared/*": [
-                "../../shared/*"
-            ],
-            "com/*": [
-                "../../shared/src/*"
-            ],
-            "shared/*": [
-                "../../shared/src/*"
-            ],
-            "fonts/*": [
-                "../../shared/assets/fonts/*"
-            ],
             "fest/*": [
                 "../../shared/fest/*"
             ],
@@ -90,7 +72,18 @@
             ],
             "veela-lib/*": [
                 "../../projects/veela.css/src/scss/*"
-            ]
+            ],
+            "boot/*": ["../shared/src/boot/*"],
+            "views/*": ["../shared/views/*"],
+            "shells/*": ["../shared/shells/*"],
+            "core/*": ["../shared/src/*"],
+            "com/*": ["../shared/src/*"],
+            "shared/*": ["../shared/src/*"],
+            "@shared/*": ["../shared/*"],
+            "fonts/*": ["../shared/assets/fonts/*"],
+            "shells/immersive/index": ["../../shells/immersive-shell/src/index.ts"],
+            "shells/content/index": ["../../shells/content-shell/src/index.ts"],
+            "shells/minimal/preview": ["../../shells/minimal-shell/src/preview.ts"]
         },
         "target": "ESNext",
         "module": "ESNext",

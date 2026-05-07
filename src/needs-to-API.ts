@@ -1417,7 +1417,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
     private async navigateSingletonShell(viewId: ViewId): Promise<void> {
         try {
-            const { bootLoader } = await import("boot/ts/BootLoader");
+            const { bootLoader } = await import("boot/BootLoader");
             const shell = bootLoader.getShell();
             if (shell?.navigate && !["window", "tabbed", "environment"].includes(shell.id)) {
                 await shell.navigate(viewId);
