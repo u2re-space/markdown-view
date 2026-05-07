@@ -928,7 +928,13 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                         this.options.filename = String(payload.filename);
                     }
                     const detachedSource = String(payload?.source || "");
-                    if (detachedSource) {
+                    const isExt =
+                        typeof globalThis.location !== "undefined" &&
+                        globalThis.location.protocol === "chrome-extension:";
+                    if (
+                        detachedSource.trim() &&
+                        !(isExt && /^file:/i.test(detachedSource.trim()))
+                    ) {
                         this.sourceUrl = this.normalizeSourceUrl(detachedSource);
                         this.options.source = detachedSource;
                     }
@@ -940,8 +946,14 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
         const sourceParam = params.source || params.src || params.path || params.url;
         if (sourceParam) {
-            this.sourceUrl = this.normalizeSourceUrl(sourceParam);
-            this.options.source = sourceParam;
+            const sp = String(sourceParam).trim();
+            const isExt =
+                typeof globalThis.location !== "undefined" &&
+                globalThis.location.protocol === "chrome-extension:";
+            if (!(isExt && /^file:/i.test(sp))) {
+                this.sourceUrl = this.normalizeSourceUrl(sourceParam);
+                this.options.source = sourceParam as string | undefined;
+            }
         }
         const filenameParam = params.filename || params.name;
         if (filenameParam) {
@@ -2459,6 +2471,25 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             return;
         }
 
+        /** WHY: `chrome-extension:` pages must not treat `file:` as a document base — Chromium blocks nested file loads and leaks console errors unique to file origins. */
+        const stripFileUrlHintsFromCrxMarkdownPayload = (raw: typeof msg.data): typeof msg.data => {
+            if (!raw) return raw;
+            try {
+                if (globalThis.location?.protocol !== "chrome-extension:") return raw;
+            } catch {
+                return raw;
+            }
+            const copy = { ...raw };
+            for (const key of ["url", "source", "src", "path"] as const) {
+                const v = copy[key];
+                if (typeof v === "string" && /^file:/i.test(v.trim())) {
+                    delete copy[key];
+                }
+            }
+            return copy;
+        };
+        const payload = stripFileUrlHintsFromCrxMarkdownPayload(msg.data) ?? msg.data;
+
         const meta = msg.metadata;
         const sourceMeta =
             meta && typeof meta.source === "string" ? (meta.source as string) : "";
@@ -2480,16 +2511,16 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             fromLaunchQueue || fromShareTarget || msg.type === "share-target-input";
 
         const hintName =
-            typeof msg.data?.filename === "string" && msg.data.filename.trim().length > 0
-                ? msg.data.filename.trim()
-                : typeof (msg.data as { hint?: { filename?: string } } | undefined)?.hint?.filename === "string"
-                  ? String((msg.data as { hint: { filename: string } }).hint.filename).trim()
+            typeof payload?.filename === "string" && payload.filename.trim().length > 0
+                ? payload.filename.trim()
+                : typeof (payload as { hint?: { filename?: string } } | undefined)?.hint?.filename === "string"
+                  ? String((payload as { hint: { filename: string } }).hint.filename).trim()
                   : undefined;
 
-        let fileEarly: File | null = msg.data?.file instanceof File ? msg.data.file : null;
+        let fileEarly: File | null = payload?.file instanceof File ? payload.file : null;
 
-        if (Array.isArray(msg.data?.files) && msg.data!.files!.some((f) => f instanceof File)) {
-            const files = msg.data!.files!.filter((f): f is File => f instanceof File);
+        if (Array.isArray(payload?.files) && payload!.files!.some((f) => f instanceof File)) {
+            const files = payload!.files!.filter((f): f is File => f instanceof File);
             const picked = pickAuthoritativeTransferFiles(files, {
                 hintFilename: hintName,
                 isTextLike: (f) => this.isTextLikeFile(f),
@@ -2523,17 +2554,17 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 const text = await fileEarly.text();
                 if (this.viewIngressSupersededAfterAsync(meta)) return;
                 const sourcePath =
-                    msg.data?.source || msg.data?.src || msg.data?.path || fileEarly.name;
-                this.ingestOpenedMarkdownBody(text || "", msg.data?.filename || fileEarly.name, sourcePath);
+                    payload?.source || payload?.src || payload?.path || fileEarly.name;
+                this.ingestOpenedMarkdownBody(text || "", payload?.filename || fileEarly.name, sourcePath);
                 return;
             } catch (error) {
                 console.warn("[Viewer] Failed to read prioritized file payload, falling back to inline/url:", error);
                 if (preferAuthoritativeTextFile) {
                     const sourcePath =
-                        msg.data?.source || msg.data?.src || msg.data?.path || fileEarly!.name;
+                        payload?.source || payload?.src || payload?.path || fileEarly!.name;
                     this.setContent(
                         `> Failed to read transferred file:\n> ${fileEarly!.name}`,
-                        msg.data?.filename || fileEarly!.name,
+                        payload?.filename || fileEarly!.name,
                         sourcePath
                     );
                     return;
@@ -2541,32 +2572,32 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             }
         }
 
-        if (!textLikeMergedEnvelopeFile && (msg.data?.text || msg.data?.content)) {
-            const content = msg.data.text || msg.data.content || "";
-            const source = msg.data.source || msg.data.src || msg.data.path;
-            this.ingestOpenedMarkdownBody(content, msg.data.filename, source);
+        if (!textLikeMergedEnvelopeFile && (payload?.text || payload?.content)) {
+            const content = payload.text || payload.content || "";
+            const source = payload.source || payload.src || payload.path;
+            this.ingestOpenedMarkdownBody(content, payload.filename, source);
             return;
         }
 
-        if (msg.data?.url) {
-            const source = msg.data.source || msg.data.src || msg.data.path || msg.data.url;
-            const opened = await this.openMarkdownFromUrl(source, msg.data.filename);
+        if (payload?.url) {
+            const source = payload.source || payload.src || payload.path || payload.url;
+            const opened = await this.openMarkdownFromUrl(source, payload.filename);
             if (this.viewIngressSupersededAfterAsync(meta)) return;
             if (!opened) {
                 const fallbackContent = `> Failed to load markdown from:\n> ${source}`;
-                this.setContent(fallbackContent, msg.data.filename, source);
+                this.setContent(fallbackContent, payload.filename, /^file:/i.test(String(source || "").trim()) ? null : source);
             }
             return;
         }
 
         let fileCandidate: File | null =
-            msg.data?.file instanceof File
-                ? msg.data.file
-                : Array.isArray(msg.data?.files)
-                  ? (msg.data?.files.find((f): f is File => f instanceof File) ?? null)
+            payload?.file instanceof File
+                ? payload.file
+                : Array.isArray(payload?.files)
+                  ? (payload?.files.find((f): f is File => f instanceof File) ?? null)
                   : null;
-        fileCandidate ??= hintName && Array.isArray(msg.data?.files)
-            ? (msg.data!.files!.filter((f): f is File => f instanceof File).find((f) => f.name === hintName) ?? null)
+        fileCandidate ??= hintName && Array.isArray(payload?.files)
+            ? (payload!.files!.filter((f): f is File => f instanceof File).find((f) => f.name === hintName) ?? null)
             : null;
 
         if (fileCandidate) {
@@ -2578,8 +2609,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             try {
                 const text = await fileCandidate.text();
                 if (this.viewIngressSupersededAfterAsync(meta)) return;
-                const srcPath = msg.data?.source || msg.data?.src || msg.data?.path || fileCandidate.name;
-                this.ingestOpenedMarkdownBody(text || "", msg.data?.filename || fileCandidate.name, srcPath);
+                const srcPath = payload?.source || payload?.src || payload?.path || fileCandidate.name;
+                this.ingestOpenedMarkdownBody(text || "", payload?.filename || fileCandidate.name, srcPath);
             } catch (error) {
                 console.warn("[Viewer] Failed to read markdown file payload:", error);
             }
