@@ -2468,6 +2468,16 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 : "";
         const fromLaunchQueue =
             sourceMeta.includes("launch-queue") || routeMeta.includes("launch-queue");
+        /** Share-target and SW metadata envelopes can duplicate title/url as stale `text` while `files[]` holds the doc. */
+        const fromShareTarget =
+            sourceMeta.includes("share-target") ||
+            routeMeta.includes("share-target") ||
+            meta &&
+                typeof meta === "object" &&
+                !Array.isArray(meta) &&
+                String((meta as { shareTarget?: unknown }).shareTarget ?? "") === "1";
+        const preferAuthoritativeTextFile =
+            fromLaunchQueue || fromShareTarget || msg.type === "share-target-input";
 
         const hintName =
             typeof msg.data?.filename === "string" && msg.data.filename.trim().length > 0
@@ -2495,15 +2505,15 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             }
         }
 
-        /** Launch-queue merges can retain stale inline text; prefer a text-like File when present. */
-        const textLikeLaunchFile =
-            fromLaunchQueue && !!fileEarly && this.isTextLikeFile(fileEarly);
+        /** Launch-queue / share merges can retain stale inline text; prefer a text-like File when present. */
+        const textLikeMergedEnvelopeFile =
+            preferAuthoritativeTextFile && !!fileEarly && this.isTextLikeFile(fileEarly);
 
         /** Inline `text`/`content` can lag merged envelopes; authoritative body is usually the transferred File. */
         const prioritizeFilePayload =
             fileEarly &&
             this.isTextLikeFile(fileEarly) &&
-            (fromLaunchQueue ||
+            (preferAuthoritativeTextFile ||
                 msg.type === "content-load" ||
                 msg.type === "content-view" ||
                 msg.type === "markdown-content");
@@ -2518,7 +2528,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 return;
             } catch (error) {
                 console.warn("[Viewer] Failed to read prioritized file payload, falling back to inline/url:", error);
-                if (fromLaunchQueue) {
+                if (preferAuthoritativeTextFile) {
                     const sourcePath =
                         msg.data?.source || msg.data?.src || msg.data?.path || fileEarly!.name;
                     this.setContent(
@@ -2531,7 +2541,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             }
         }
 
-        if (!textLikeLaunchFile && (msg.data?.text || msg.data?.content)) {
+        if (!textLikeMergedEnvelopeFile && (msg.data?.text || msg.data?.content)) {
             const content = msg.data.text || msg.data.content || "";
             const source = msg.data.source || msg.data.src || msg.data.path;
             this.ingestOpenedMarkdownBody(content, msg.data.filename, source);
