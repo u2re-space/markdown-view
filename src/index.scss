@@ -1420,12 +1420,14 @@
     }
 
     :is(:root, html):has([data-shell="minimal"] [data-view="viewer"]),
-    :is(:root, html):has([data-shell="base"] [data-view="viewer"]) {
+    :is(:root, html):has([data-shell="base"] [data-view="viewer"]),
+    :is(:root, html):has([data-shell="immersive"] [data-view="viewer"]) {
         --view-content-max-width: 800px;
         --view-padding-x: var(--space-6);
     }
 
     :is(:root, html):has([data-shell="base"] [data-view="airpad"]),
+    :is(:root, html):has([data-shell="immersive"] [data-view="airpad"]),
     :is(:root, html):has([data-shell="minimal"] [data-view="airpad"]) {
         --view-content-max-width: none;
         --view-padding: 0;
@@ -3430,6 +3432,7 @@
         }
 
         :is(html, body):has([data-shell="base"]),
+        :is(html, body):has([data-shell="immersive"]),
         :is(html, body):has([data-shell="minimal"]) {
             background: #fff !important;
             color: #000 !important;
@@ -4022,9 +4025,13 @@
 
 @layer layer.view.viewer {
     /*
-     * Base / minimal shells: viewer chrome spans the content track (not min-content / “floating” island).
+     * Base / immersive / minimal shells: viewer chrome spans the content track (not min-content / “floating” island).
      */
-    :is(html:has([data-shell="base"]), html:has([data-shell="minimal"])) {
+    :is(
+        html:has([data-shell="base"]),
+        html:has([data-shell="immersive"]),
+        html:has([data-shell="minimal"])
+    ) {
         cw-view-viewer[data-cw-view-host="true"] {
             display: block;
             inline-size: 100%;

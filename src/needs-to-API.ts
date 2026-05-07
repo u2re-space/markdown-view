@@ -13,11 +13,19 @@ import { loadAsAdopted, removeAdopted } from "fest/dom";
 import DOMPurify from 'dompurify';
 import renderMathInElement from "katex/dist/contrib/auto-render.mjs";
 import { ensureStyleSheet, reinitializeRegistry } from "fest/icon";
-import type { BaseViewOptions, ShellContext, ViewLifecycle, ViewOptions } from "views/types";
+import type { BaseViewOptions, ShellContext, ViewLifecycle, ViewOptions, ViewId } from "views/types";
+import type { View } from "shells/types";
+import { ingressStampWasSuperseded } from "com/routing/core/channel-mixin";
 import { createViewState } from "views/types";
 import { createViewConstructor } from "views/registry";
 import { ViewerChannelAction, ExplorerChannelAction } from "views/apis/channel-actions";
 import { loadSettings } from "com/config/Settings";
+import { sendViewProtocolMessage } from "com/core/UniformViewTransport";
+import {
+    pickAuthoritativeTransferFiles,
+    textIngressLooksCorrupt,
+    validateReadableFileForIngress,
+} from "com/core/view-ingress-validation";
 import {
     type ViewerColorScheme,
     normalizeViewerSetColorSchemePayload,
@@ -265,6 +273,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     /** When mounted under `cw-view-viewer`, slotted raw/prose are light children of this host. */
     private slotProjectingHost: HTMLElement | null = null;
     private contentRef = ref("");
+    /** Single subscription: `affected()` returns a disposer — re-render without dispose stacks callbacks on stale DOM refs. */
+    private contentRefSubscriptionDispose: (() => void) | undefined | null = null;
     private renderSeq = 0;
     private stateManager = createViewState<ViewerState>(STORAGE_KEY);
     private _sheet: CSSStyleSheet | null = null;
@@ -312,6 +322,34 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     /** Document theme lock for `html[data-theme]` (see `index.scss` / `theme.ts`). */
     private viewerColorScheme: ViewerColorScheme = "system";
     private documentThemeSnapshot: { prevAttr: string | null; prevInlineCs: string } | null = null;
+
+    private disposeContentRefSubscription(): void {
+        try {
+            this.contentRefSubscriptionDispose?.();
+        } catch {
+            /* noop */
+        }
+        this.contentRefSubscriptionDispose = null;
+    }
+
+    /**
+     * Subscribe to reactive content updates for the **current** render targets only.
+     * WHY: Repeated `render()` / host remounts must not leave prior `affected` handlers
+     * calling `renderMarkdown` into detached nodes (stale paints / race with new opens).
+     */
+    private subscribeContentRefToCurrentTargets(
+        renderTarget: HTMLElement | null,
+        rawTarget: HTMLPreElement | null
+    ): void {
+        this.disposeContentRefSubscription();
+        const dispose = affected(this.contentRef, () => {
+            if (renderTarget && rawTarget) {
+                this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
+            }
+            this.saveState();
+        });
+        this.contentRefSubscriptionDispose = typeof dispose === "function" ? dispose : null;
+    }
 
     lifecycle: ViewLifecycle = {
         onMount: () => this.onMount(),
@@ -370,15 +408,35 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
         }
 
-        affected(this.contentRef, () => {
-            if (renderTarget && rawTarget) {
-                this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
-            }
-            this.saveState();
-        });
+        this.subscribeContentRefToCurrentTargets(renderTarget, rawTarget);
 
         this.refreshDocumentTheme();
         return this.element;
+    }
+
+    /**
+     * Shell cache path: {@link ShellBase.loadView} may return an already-connected root without calling {@link render}.
+     * Re-merge shell context and route params, then repaint — avoids stale markdown when reopening the viewer.
+     */
+    shellNavigateHydrate(options?: ViewOptions, _initialData?: unknown): void {
+        if (!this.element?.isConnected) return;
+        if (options) {
+            this.options = { ...this.options, ...options };
+            this.shellContext = options.shellContext || this.shellContext;
+            if (options.params !== undefined) {
+                this.applyRouteParams(options.params);
+            }
+            this.syncViewerColorSchemeFromOptions();
+        }
+        const renderTarget = this.queryViewerSlotted("[data-render-target]");
+        const rawTarget = this.queryViewerSlotted("[data-raw-target]") as HTMLPreElement | null;
+        if (renderTarget && rawTarget) {
+            this.subscribeContentRefToCurrentTargets(renderTarget, rawTarget);
+            this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
+        }
+        this.syncOutlineToolbarState();
+        this.syncToolbarDocumentTitle();
+        this.refreshDocumentTheme();
     }
 
     /**
@@ -414,12 +472,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
         }
 
-        affected(this.contentRef, () => {
-            if (renderTarget && rawTarget) {
-                this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
-            }
-            this.saveState();
-        });
+        this.subscribeContentRefToCurrentTargets(renderTarget, rawTarget);
 
         this.refreshDocumentTheme();
     }
@@ -443,6 +496,21 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             this.options.source = source || undefined;
         }
         this.syncToolbarDocumentTitle();
+    }
+
+    /**
+     * Apply markdown read from transports (file/url/message). Blocks obvious binary/mojibake before mutating reactive content (`contentRef`).
+     */
+    private ingestOpenedMarkdownBody(body: string, filename?: string, source?: string | null): void {
+        if (body.length > 0 && textIngressLooksCorrupt(body)) {
+            this.setContent(
+                "> This payload does not look like UTF-8 markdown (binary file or unsupported format).\n>\n> Open a `.md` / `.txt` file, paste as plain text, or attach binaries via Work Center.\n\n",
+                filename,
+                source
+            );
+            return;
+        }
+        this.setContent(body, filename, source ?? undefined);
     }
 
     /**
@@ -1077,7 +1145,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         if (!normalizedSource) return false;
         const markdown = await this.fetchMarkdownFromUrl(normalizedSource);
         if (markdown === null) return false;
-        this.setContent(markdown, filename, normalizedSource);
+        this.ingestOpenedMarkdownBody(markdown, filename, normalizedSource);
         this.showMessage(filename ? `Opened ${filename}` : "Opened markdown link");
         return true;
     }
@@ -1335,6 +1403,20 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
     }
 
+    private async navigateSingletonShell(viewId: ViewId): Promise<void> {
+        try {
+            const { bootLoader } = await import("boot/ts/BootLoader");
+            const shell = bootLoader.getShell();
+            if (shell?.navigate && !["window", "tabbed", "environment"].includes(shell.id)) {
+                await shell.navigate(viewId);
+                return;
+            }
+        } catch (error) {
+            console.warn("[Viewer] BootLoader.navigate unavailable (standalone build?):", error);
+        }
+        await Promise.resolve(this.shellContext?.navigate?.(viewId));
+    }
+
     /** Push current markdown buffer into Work Center (toolbar attach / channel API). */
     async attachCurrentContentToWorkcenter(): Promise<void> {
         const content = this.contentRef.value || "";
@@ -1374,14 +1456,47 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             }
         }
 
-        await Promise.resolve(this.shellContext?.navigate("workcenter"));
+        // Prefer live BootLoader shell — same singleton instance MinimalShell toolbar uses;
+        // `shellContext.navigate` may be missing or stale on some viewer mount paths.
+        await this.navigateSingletonShell("workcenter");
+        await new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+        );
+        await this.navigateSingletonShell("workcenter");
+
+        // WHY: Same path as explorer → workcenter: protocol + File so unified ingress can defer until
+        // workcenter paint; text-only handleMessage races shell hydration on minimal/immersive.
+        const markdownFile = new File([content], filename, {
+            type: "text/markdown;charset=utf-8"
+        });
+
+        try {
+            const viaProtocol = await sendViewProtocolMessage({
+                type: "content-share",
+                source: "viewer",
+                destination: "workcenter",
+                contentType: "text/markdown",
+                attachments: [{ data: markdownFile, source: "viewer-workcenter-attach" }],
+                data: { ...payload, sourcePath: filename } as Record<string, unknown>,
+                metadata: { filename, sourcePath: filename }
+            });
+            if (viaProtocol) {
+                this.showMessage("Content attached to Work Center");
+                return;
+            }
+        } catch (error) {
+            console.warn("[Viewer] protocol workcenter attach failed:", error);
+        }
 
         try {
             const workcenter =
                 ViewRegistry.getLoaded("workcenter") ||
                 await ViewRegistry.load("workcenter", { shellContext: this.shellContext });
             if (workcenter?.handleMessage) {
-                await workcenter.handleMessage(initialMessage);
+                await workcenter.handleMessage({
+                    ...initialMessage,
+                    data: { ...payload, file: markdownFile, files: [markdownFile] }
+                });
                 this.showMessage("Content attached to Work Center");
                 return;
             }
@@ -2120,11 +2235,24 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.syncAdoptedSheetsToShadow();
     }
 
+    /**
+     * Stable fingerprint for the markdown **pipeline** (pre-marked transforms + marked input + link post-processing).
+     * WHY: `loadMarkdownSettings` runs from constructor and on every `onShow`; re-applying typography/CSS must not
+     * always call `renderMarkdown`, which resets the viewport to the loading placeholder even when HTML is unchanged.
+     */
+    private markdownPipelineSignature(settings: ViewerMarkdownSettings): string {
+        return JSON.stringify({
+            plugins: settings.plugins,
+            extensions: settings.extensions,
+        });
+    }
+
     private async loadMarkdownSettings(): Promise<void> {
         try {
             const settings = await loadSettings();
             const markdown = settings?.appearance?.markdown;
-            this.markdownSettings = {
+            const prevPipelineSig = this.markdownPipelineSignature(this.markdownSettings);
+            const nextSettings: ViewerMarkdownSettings = {
                 preset: (markdown?.preset || "default") as ViewerMarkdownSettings["preset"],
                 fontFamily: (markdown?.fontFamily || "system") as ViewerMarkdownSettings["fontFamily"],
                 fontSizePx: Number(markdown?.fontSizePx ?? 16),
@@ -2156,9 +2284,13 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     ? markdown.extensions
                     : []
             };
+            const nextPipelineSig = this.markdownPipelineSignature(nextSettings);
+            this.markdownSettings = nextSettings;
             await this.loadUserStyleModules();
             this.applyCustomStyles();
-            this.onRefresh();
+            if (nextPipelineSig !== prevPipelineSig) {
+                this.onRefresh();
+            }
         } catch (error) {
             console.warn("[Viewer] Failed to load markdown settings:", error);
         }
@@ -2180,6 +2312,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
     private onUnmount(): void {
         console.log("[Viewer] Unmounting");
+        this.disposeContentRefSubscription();
         this.restoreViewerDocumentTheme();
         this.saveState();
         this.isViewVisible = false;
@@ -2271,6 +2404,17 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     // MESSAGE HANDLING
     // ========================================================================
 
+    /**
+     * Drop in-flight ingress when a newer unified message bumped the supersede counter (after `await file.text()` / fetch).
+     */
+    private viewIngressSupersededAfterAsync(metadata: unknown): boolean {
+        const stamp =
+            metadata && typeof metadata === "object" && !Array.isArray(metadata)
+                ? (metadata as Record<string, unknown>).__ingressStamp
+                : undefined;
+        return ingressStampWasSuperseded(this as unknown as View, stamp);
+    }
+
     canHandleMessage(messageType: string): boolean {
         return [
             "content-view",
@@ -2286,6 +2430,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     async handleMessage(message: unknown): Promise<void> {
         const msg = message as {
             type?: string;
+            metadata?: Record<string, unknown>;
             data?: {
                 text?: string;
                 content?: string;
@@ -2314,16 +2459,89 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             return;
         }
 
-        if (msg.data?.text || msg.data?.content) {
+        const meta = msg.metadata;
+        const sourceMeta =
+            meta && typeof meta.source === "string" ? (meta.source as string) : "";
+        const routeMeta =
+            meta && typeof (meta as { route?: unknown }).route === "string"
+                ? String((meta as { route: string }).route)
+                : "";
+        const fromLaunchQueue =
+            sourceMeta.includes("launch-queue") || routeMeta.includes("launch-queue");
+
+        const hintName =
+            typeof msg.data?.filename === "string" && msg.data.filename.trim().length > 0
+                ? msg.data.filename.trim()
+                : typeof (msg.data as { hint?: { filename?: string } } | undefined)?.hint?.filename === "string"
+                  ? String((msg.data as { hint: { filename: string } }).hint.filename).trim()
+                  : undefined;
+
+        let fileEarly: File | null = msg.data?.file instanceof File ? msg.data.file : null;
+
+        if (Array.isArray(msg.data?.files) && msg.data!.files!.some((f) => f instanceof File)) {
+            const files = msg.data!.files!.filter((f): f is File => f instanceof File);
+            const picked = pickAuthoritativeTransferFiles(files, {
+                hintFilename: hintName,
+                isTextLike: (f) => this.isTextLikeFile(f),
+            });
+            fileEarly = picked ?? fileEarly;
+        }
+
+        if (fileEarly) {
+            const vr = validateReadableFileForIngress(fileEarly);
+            if (!vr.ok) {
+                console.warn("[Viewer] Ingress file rejected:", vr.reason, fileEarly.name);
+                fileEarly = null;
+            }
+        }
+
+        /** Launch-queue merges can retain stale inline text; prefer a text-like File when present. */
+        const textLikeLaunchFile =
+            fromLaunchQueue && !!fileEarly && this.isTextLikeFile(fileEarly);
+
+        /** Inline `text`/`content` can lag merged envelopes; authoritative body is usually the transferred File. */
+        const prioritizeFilePayload =
+            fileEarly &&
+            this.isTextLikeFile(fileEarly) &&
+            (fromLaunchQueue ||
+                msg.type === "content-load" ||
+                msg.type === "content-view" ||
+                msg.type === "markdown-content");
+
+        if (prioritizeFilePayload && fileEarly) {
+            try {
+                const text = await fileEarly.text();
+                if (this.viewIngressSupersededAfterAsync(meta)) return;
+                const sourcePath =
+                    msg.data?.source || msg.data?.src || msg.data?.path || fileEarly.name;
+                this.ingestOpenedMarkdownBody(text || "", msg.data?.filename || fileEarly.name, sourcePath);
+                return;
+            } catch (error) {
+                console.warn("[Viewer] Failed to read prioritized file payload, falling back to inline/url:", error);
+                if (fromLaunchQueue) {
+                    const sourcePath =
+                        msg.data?.source || msg.data?.src || msg.data?.path || fileEarly!.name;
+                    this.setContent(
+                        `> Failed to read transferred file:\n> ${fileEarly!.name}`,
+                        msg.data?.filename || fileEarly!.name,
+                        sourcePath
+                    );
+                    return;
+                }
+            }
+        }
+
+        if (!textLikeLaunchFile && (msg.data?.text || msg.data?.content)) {
             const content = msg.data.text || msg.data.content || "";
             const source = msg.data.source || msg.data.src || msg.data.path;
-            this.setContent(content, msg.data.filename, source);
+            this.ingestOpenedMarkdownBody(content, msg.data.filename, source);
             return;
         }
 
         if (msg.data?.url) {
             const source = msg.data.source || msg.data.src || msg.data.path || msg.data.url;
             const opened = await this.openMarkdownFromUrl(source, msg.data.filename);
+            if (this.viewIngressSupersededAfterAsync(meta)) return;
             if (!opened) {
                 const fallbackContent = `> Failed to load markdown from:\n> ${source}`;
                 this.setContent(fallbackContent, msg.data.filename, source);
@@ -2331,14 +2549,27 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             return;
         }
 
-        const fileCandidate = (msg.data?.file instanceof File
-            ? msg.data.file
-            : (Array.isArray(msg.data?.files) ? msg.data?.files.find((f): f is File => f instanceof File) : null));
+        let fileCandidate: File | null =
+            msg.data?.file instanceof File
+                ? msg.data.file
+                : Array.isArray(msg.data?.files)
+                  ? (msg.data?.files.find((f): f is File => f instanceof File) ?? null)
+                  : null;
+        fileCandidate ??= hintName && Array.isArray(msg.data?.files)
+            ? (msg.data!.files!.filter((f): f is File => f instanceof File).find((f) => f.name === hintName) ?? null)
+            : null;
+
         if (fileCandidate) {
+            const vc = validateReadableFileForIngress(fileCandidate);
+            if (!vc.ok) {
+                console.warn("[Viewer] File candidate rejected:", vc.reason, fileCandidate.name);
+                return;
+            }
             try {
                 const text = await fileCandidate.text();
-                const source = msg.data?.source || msg.data?.src || msg.data?.path || fileCandidate.name;
-                this.setContent(text || "", msg.data?.filename || fileCandidate.name, source);
+                if (this.viewIngressSupersededAfterAsync(meta)) return;
+                const srcPath = msg.data?.source || msg.data?.src || msg.data?.path || fileCandidate.name;
+                this.ingestOpenedMarkdownBody(text || "", msg.data?.filename || fileCandidate.name, srcPath);
             } catch (error) {
                 console.warn("[Viewer] Failed to read markdown file payload:", error);
             }
