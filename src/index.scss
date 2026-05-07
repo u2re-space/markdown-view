@@ -1517,8 +1517,10 @@
 
         // Once a current view is selected, hide non-view siblings (loaders/placeholders).
         // WHY: Shell boot loaders (`.app-shell__loading`, `[data-shell-loading]`) must stay visible until the shell hides them — same rule as [hidden].
+        // INVARIANT: Never target `<slot>` — minimal/immersive project views through `slot[name="view"]`. If this rule
+        // beats `slot { display: contents }` on first paint (layer order), slotted Work Center / first navigation looks blank.
         &[data-current-view]
-            > :not([data-view]):not(.app-shell__loading):not([data-shell-loading]) {
+            > :not([data-view]):not(.app-shell__loading):not([data-shell-loading]):not(slot) {
             display: none !important;
         }
 
