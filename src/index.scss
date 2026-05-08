@@ -630,16 +630,18 @@
             display: block !important;
             block-size: max-content !important;
             inline-size: 100% !important;
+            max-inline-size: 100% !important;
             overflow: visible !important;
             max-block-size: none !important;
-            min-block-size: max(100%, 100cqb) !important;
+            min-block-size: 0 !important;
         }
 
         .view-viewer {
             display: block !important;
-            min-block-size: max(100%, 100cqb) !important;
+            min-block-size: 0 !important;
             block-size: max-content !important;
             inline-size: 100% !important;
+            max-inline-size: 100% !important;
             overflow: visible !important;
             background: transparent !important;
             color: #000 !important;
@@ -656,18 +658,20 @@
             overflow: visible !important;
             block-size: max-content !important;
             inline-size: 100% !important;
+            max-inline-size: 100% !important;
             max-block-size: none !important;
-            min-block-size: max(100%, 100cqb) !important;
+            min-block-size: 0 !important;
         }
 
         .cw-view-viewer__prose {
             display: block !important;
             block-size: max-content !important;
             inline-size: 100% !important;
+            max-inline-size: 100% !important;
             overflow: visible !important;
             contain: none !important;
             max-block-size: none !important;
-            min-block-size: max(100%, 100cqb) !important;
+            min-block-size: 0 !important;
         }
 
         .cw-view-viewer__slot-raw,
@@ -675,9 +679,10 @@
             display: block !important;
             block-size: max-content !important;
             inline-size: 100% !important;
+            max-inline-size: 100% !important;
             overflow: visible !important;
             max-block-size: none !important;
-            min-block-size: max(100%, 100cqb) !important;
+            min-block-size: 0 !important;
         }
 
         [data-render-target],
@@ -690,8 +695,9 @@
             overflow: visible !important;
             block-size: max-content !important;
             max-block-size: none !important;
-            min-block-size: max(100%, 100cqb) !important;
+            min-block-size: 0 !important;
             inline-size: 100% !important;
+            max-inline-size: 100% !important;
             color: #000 !important;
             background: transparent !important;
         }
@@ -3441,7 +3447,9 @@
             overflow: visible !important;
         }
 
-        /* Keep markdown web-component content printable across all shells. */
+        /* Keep markdown web-component content printable across all shells.
+         * WHY: Avoid min-block-size: 100%/100cqb here — it forces nested wrappers to viewport height,
+         * breaks pagination, and lets prose paint as if “outside” hidden shell chrome / fixed frames. */
         [data-cw-view-host="true"][data-view-id="viewer"],
         .cw-view-viewer-shell,
         .cw-view-viewer__prose,
@@ -3461,17 +3469,16 @@
             overflow: visible !important;
             position: static !important;
             inset: auto !important;
-            min-block-size: max(100%, 100cqb) !important;
+            min-block-size: 0 !important;
             inline-size: 100% !important;
+            max-inline-size: 100% !important;
             block-size: max-content !important;
-            max-inline-size: none !important;
             max-block-size: none !important;
             contain: none !important;
             container-type: normal !important;
             content-visibility: visible !important;
             break-before: auto !important;
             break-after: auto !important;
-            contain: none !important;
         }
 
         .view-viewer__toolbar,
@@ -4213,6 +4220,8 @@
             display: block !important;
             block-size: auto !important;
             inline-size: 100% !important;
+            max-inline-size: 100% !important;
+            min-block-size: 0 !important;
             overflow: visible !important;
             contain: none !important;
             container-type: normal !important;
@@ -4222,6 +4231,8 @@
             display: block !important;
             block-size: auto !important;
             inline-size: 100% !important;
+            max-inline-size: 100% !important;
+            min-block-size: 0 !important;
             overflow: visible !important;
             background: transparent !important;
             color: #000 !important;
@@ -4241,12 +4252,16 @@
             overflow: visible !important;
             block-size: auto !important;
             inline-size: 100% !important;
+            max-inline-size: 100% !important;
+            min-block-size: 0 !important;
         }
 
         .cw-view-viewer__prose {
             display: block !important;
             block-size: auto !important;
             inline-size: 100% !important;
+            max-inline-size: 100% !important;
+            min-block-size: 0 !important;
             overflow: visible !important;
             contain: none !important;
         }
@@ -4256,6 +4271,8 @@
             display: block !important;
             block-size: auto !important;
             inline-size: 100% !important;
+            max-inline-size: 100% !important;
+            min-block-size: 0 !important;
             overflow: visible !important;
         }
 
@@ -4267,9 +4284,10 @@
             visibility: visible !important;
             opacity: 1 !important;
             overflow: visible !important;
-            min-block-size: 100% !important;
+            min-block-size: 0 !important;
             block-size: auto !important;
             inline-size: 100% !important;
+            max-inline-size: 100% !important;
             color: #000 !important;
             background: transparent !important;
         }
