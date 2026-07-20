@@ -3931,11 +3931,11 @@
     --view-prose-line-height: 1.75;
     --view-prose-heading-margin: var(--space-6);
 
-    color-scheme: light dark;
-
     /*
-     * WHY: Transparent pill chrome belongs on `.view-viewer__toolbar` only. Setting `--color-surface`
-     * on `:root` leaked into minimal shell tokens (`light-dark(var(--color-surface), …)`), breaking light theme.
+     * WHY: Do NOT set `color-scheme: light dark` or override `--color-on-surface` here when this mixin
+     * is applied on `:root` / `html` — OS-dark + app-light made shell nav use light fg on lavender
+     * (`--shell-fg` ← `--color-on-surface`). Control tokens live under `.view-viewer` only (below).
+     * Transparent pill chrome belongs on `.view-viewer__toolbar` only (not `--color-surface` on `:root`).
      */
     --view-bg: #{_viewer-css-light-dark("light-dark(#f4f6fa, #0b0d12)")};
     --view-fg: var(--color-on-surface, #{_viewer-css-light-dark("light-dark(#1a1a1a, #e8eaef)")});
@@ -3959,10 +3959,6 @@
     --view-link-color: var(--color-link, #{_viewer-css-light-dark("light-dark(#06c, #7eb8ff)")});
     --view-link-hover: var(--color-link-hover, #{_viewer-css-light-dark("light-dark(#005fa3, #a8d0ff)")});
 
-    /* fl-ui / toolbar controls — neutral text on canvas; pill surfaces scoped under `.view-viewer__toolbar` */
-    --color-on-surface: #{_viewer-css-light-dark("light-dark(#2d3748, #c4c9d4)")};
-    --color-primary: #{_viewer-css-light-dark("light-dark(#2563eb, #8ab4ff)")};
-
     /* toolbar (see .view-viewer__toolbar) */
     --view-toolbar-pad-block: 0.375rem;
     --view-toolbar-pad-inline: 0.625rem;
@@ -3984,11 +3980,17 @@
 }
 
 @layer layer.view.viewer {
+    /* Root: view layout tokens only — never clobber Veela `--color-on-surface` for the shell. */
     :root:has([data-view="viewer"]),
-    html:has([data-view="viewer"]),
-    cw-view-viewer[data-view="viewer"],
-    cw-view-viewer[data-view-id="viewer"] {
+    html:has([data-view="viewer"]) {
         @include viewer-view-tokens;
+    }
+
+    /* View host: local control tokens (toolbar / fl-ui) stay inside the viewer subtree. */
+    :where(.view-viewer, .cw-view-viewer-shell, cw-view-viewer[data-view="viewer"], cw-view-viewer[data-view-id="viewer"]) {
+        @include viewer-view-tokens;
+        --color-on-surface: #{_viewer-css-light-dark("light-dark(#2d3748, #c4c9d4)")};
+        --color-primary: #{_viewer-css-light-dark("light-dark(#2563eb, #8ab4ff)")};
     }
 
     /*
@@ -3997,10 +3999,14 @@
      */
     html[data-theme="light"] :where(.cw-view-viewer-shell, .view-viewer) {
         color-scheme: light;
+        --color-on-surface: #2d3748;
+        --color-primary: #2563eb;
     }
 
     html[data-theme="dark"] :where(.cw-view-viewer-shell, .view-viewer) {
         color-scheme: dark;
+        --color-on-surface: #c4c9d4;
+        --color-primary: #8ab4ff;
     }
 
     /*
