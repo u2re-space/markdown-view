@@ -108,6 +108,7 @@ const MD_VIEW_SHADOW_STYLES = `
     min-height: 0;
     min-block-size: 0;
     min-inline-size: 0;
+    box-shadow: none;
 }
 .md-view__chrome {
     flex-shrink: 0;
@@ -122,6 +123,7 @@ const MD_VIEW_SHADOW_STYLES = `
     min-height: 0;
     min-block-size: 0;
     min-inline-size: 0;
+    box-shadow: none;
 }
 ::slotted(.markdown-body) {
     flex: 1 1 auto;

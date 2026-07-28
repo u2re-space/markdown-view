@@ -700,6 +700,7 @@
             max-inline-size: 100% !important;
             color: #000 !important;
             background: transparent !important;
+            box-shadow: none !important;
         }
     }
 }
@@ -3479,6 +3480,7 @@
             content-visibility: visible !important;
             break-before: auto !important;
             break-after: auto !important;
+            box-shadow: none !important;
         }
 
         .view-viewer__toolbar,
@@ -4296,6 +4298,7 @@
             max-inline-size: 100% !important;
             color: #000 !important;
             background: transparent !important;
+            box-shadow: none !important;
         }
 
         .markdown-viewer-content,

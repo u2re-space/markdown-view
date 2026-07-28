@@ -297,7 +297,7 @@ $_h-sizes: (
         overflow: auto;
         padding: var(--space-2xl) var(--space-xl);
         background: var(--color-surface);
-        box-shadow: var(--elev-1);
+        box-shadow: none;
         transition: box-shadow var(--motion-normal);
         overflow-wrap: break-word;
         word-wrap: break-word;
@@ -939,7 +939,7 @@ $_h-sizes: (
         &:hover {
             background: var(--color-surface-container-highest);
             translate: 0 -1px;
-            box-shadow: var(--elev-1);
+            box-shadow: none;
         }
 
         &:active {
