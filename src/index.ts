@@ -1,5 +1,5 @@
 /**
- * CrossWord viewer module entry — exposes the shell-integrated {@link CwViewViewer} custom element
+ * CWSP-shell viewer module entry — exposes the shell-integrated {@link CwViewViewer} custom element
  * (default export = CE constructor; `new X(options)` + `.render()`).
  *
  * Shell / window ids: primary **`viewer`**, aliases **`markdown`**, **`markdown-view`**, … — see
