@@ -2877,10 +2877,10 @@
         place-items: center;
         text-align: start;
         cursor: pointer;
-        appearance: none;
-        -webkit-appearance: none;
-        -moz-appearance: none;
-        appearance: base-select;
+        appearance: base-select !important;
+        -webkit-appearance: base-select !important;
+        -moz-appearance: base-select !important;
+        appearance: base-select !important;
         flex-direction: row;
         flex-wrap: nowrap;
         text-wrap: nowrap;
