@@ -1,4 +1,11 @@
 /*
+ * Filename: _viewer-shell-host-theme.scss
+ * FullPath: modules/views/markdown-view/src/scss/_viewer-shell-host-theme.scss
+ * Change date and time: 16.30.00_31.07.2026
+ * Reason for changes: Inherit wallpaper primary for viewer icons (no blue/purple pin).
+ */
+
+/*
  * Markdown viewer theme bridge for shells that render views inside an open shadow root (cw-shell-minimal, cw-shell-immersive).
  *
  * WHY: Document-level rules such as `html[data-theme="light"] .cw-view-viewer-shell` and `:root:has([data-view="viewer"])`
@@ -26,38 +33,38 @@
         :host([data-theme="light"]) ::slotted([data-view="viewer"]) {
             color-scheme: light;
 
-            --view-bg: #f4f6fa;
-            --view-fg: #1a1a1a;
-            --view-toolbar-bg: rgba(0, 0, 0, 0.06);
-            --view-btn-hover-bg: rgba(0, 0, 0, 0.07);
-            --view-code-bg: #f0f2f5;
-            --view-blockquote-bg: rgba(0, 0, 0, 0.03);
-            --color-on-surface: #2d3748;
-            --color-primary: #2563eb;
+            /* Inherit wallpaper --color-primary; do not pin blue #2563eb. */
+            --base-color: var(--color-primary, #00a3ad);
+            --view-bg: var(--color-surface, --u2-color-mod(var(--base-color), 70));
+            --view-fg: var(--color-on-surface, --u2-color-mod(var(--base-color), 900));
+            --view-toolbar-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 900) 6%, transparent);
+            --view-btn-hover-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 900) 7%, transparent);
+            --view-code-bg: --u2-color-mod(var(--base-color), 120);
+            --view-blockquote-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 900) 3%, transparent);
+            --color-on-surface: --u2-color-mod(var(--base-color), 860);
 
-            /* Toolbar row (inherited into viewer shadow — replaces nested .view-viewer__toolbar rules) */
-            --viewer-toolbar-row-fill: #e8ecf4;
-            --view-picon-fill: #1e293b;
-            --view-picon-fill-hover: #2563eb;
-            --color-surface-container-high: rgb(0 0 0 / 0.1);
+            --viewer-toolbar-row-fill: --u2-color-mod(var(--base-color), 160);
+            --view-picon-fill: --u2-color-mod(var(--base-color), 780);
+            --view-picon-fill-hover: var(--color-primary, --u2-color-mod(var(--base-color), 550));
+            --color-surface-container-high: color-mix(in oklab, --u2-color-mod(var(--base-color), 900) 10%, transparent);
         }
 
         :host([data-theme="dark"]) ::slotted([data-view="viewer"]) {
             color-scheme: dark;
 
-            --view-bg: #0b0d12;
-            --view-fg: #e8eaef;
-            --view-toolbar-bg: rgba(255, 255, 255, 0.06);
-            --view-btn-hover-bg: rgba(255, 255, 255, 0.08);
-            --view-code-bg: #161a22;
-            --view-blockquote-bg: rgba(255, 255, 255, 0.04);
-            --color-on-surface: #c4c9d4;
-            --color-primary: #8ab4ff;
+            --base-color: var(--color-primary, #00a3ad);
+            --view-bg: var(--color-surface, --u2-color-mod(var(--base-color), 960));
+            --view-fg: var(--color-on-surface, --u2-color-mod(var(--base-color), 100));
+            --view-toolbar-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 100) 6%, transparent);
+            --view-btn-hover-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 100) 8%, transparent);
+            --view-code-bg: --u2-color-mod(var(--base-color), 900);
+            --view-blockquote-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 100) 4%, transparent);
+            --color-on-surface: --u2-color-mod(var(--base-color), 120);
 
-            --viewer-toolbar-row-fill: #151f2e;
-            --view-picon-fill: #e5e7eb;
-            --view-picon-fill-hover: var(--color-primary-hover, #93c5fd);
-            --color-surface-container-high: rgb(255 255 255 / 0.14);
+            --viewer-toolbar-row-fill: --u2-color-mod(var(--base-color), 880);
+            --view-picon-fill: --u2-color-mod(var(--base-color), 280);
+            --view-picon-fill-hover: --u2-color-mod(var(--base-color), 420);
+            --color-surface-container-high: color-mix(in oklab, --u2-color-mod(var(--base-color), 100) 14%, transparent);
         }
 
         /*
@@ -65,14 +72,14 @@
         * Descendant combinator after ::slotted is valid for elements under the assigned node.
         */
         :host([data-theme="light"]) ::slotted([data-view="viewer"]) :where(.markdown-body, [data-render-target].markdown-body) {
-            --color-surface: #ffffff;
-            --color-on-surface: #1a1a1a;
+            --color-surface: --u2-color-mod(var(--base-color, var(--color-primary)), 40);
+            --color-on-surface: --u2-color-mod(var(--base-color, var(--color-primary)), 900);
             color-scheme: light;
         }
 
         :host([data-theme="dark"]) ::slotted([data-view="viewer"]) :where(.markdown-body, [data-render-target].markdown-body) {
-            --color-surface: #121212;
-            --color-on-surface: #e8eaef;
+            --color-surface: --u2-color-mod(var(--base-color, var(--color-primary)), 950);
+            --color-on-surface: --u2-color-mod(var(--base-color, var(--color-primary)), 100);
             color-scheme: dark;
         }
     }

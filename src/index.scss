@@ -68,15 +68,15 @@
     * (`--shell-fg` ← `--color-on-surface`). Control tokens live under `.view-viewer` only (below).
     * Transparent pill chrome belongs on `.view-viewer__toolbar` only (not `--color-surface` on `:root`).
     */
-    --view-bg: #{_viewer-css-light-dark("light-dark(#f4f6fa, #0b0d12)")};
-    --view-fg: var(--color-on-surface, #{_viewer-css-light-dark("light-dark(#1a1a1a, #e8eaef)")});
-    --view-border: var(--color-border, #{_viewer-css-light-dark("light-dark(rgba(0, 0, 0, 0.12), rgba(255, 255, 255, 0.07))")});
-    --view-toolbar-bg: #{_viewer-css-light-dark("light-dark(rgba(0, 0, 0, 0.03), rgba(255, 255, 255, 0.05))")};
-    --view-btn-hover-bg: #{_viewer-css-light-dark("light-dark(rgba(0, 0, 0, 0.07), rgba(255, 255, 255, 0.08))")};
-    --view-code-bg: #{_viewer-css-light-dark("light-dark(#f0f2f5, #161a22)")};
+    --view-bg: var(--color-surface, light-dark(--u2-color-mod(var(--base-color, var(--color-primary, #00a3ad)), 70), --u2-color-mod(var(--base-color, var(--color-primary, #00a3ad)), 960)));
+    --view-fg: var(--color-on-surface, light-dark(--u2-color-mod(var(--base-color, var(--color-primary, #00a3ad)), 900), --u2-color-mod(var(--base-color, var(--color-primary, #00a3ad)), 100)));
+    --view-border: var(--color-border, color-mix(in oklab, var(--view-fg) 12%, transparent));
+    --view-toolbar-bg: color-mix(in oklab, var(--view-fg) 5%, transparent);
+    --view-btn-hover-bg: color-mix(in oklab, var(--view-fg) 8%, transparent);
+    --view-code-bg: light-dark(--u2-color-mod(var(--base-color, var(--color-primary, #00a3ad)), 120), --u2-color-mod(var(--base-color, var(--color-primary, #00a3ad)), 900));
     --view-code-fg: #{_viewer-css-light-dark("light-dark(var(--color-text, #1a1a1a), #d8dce6)")};
     --view-code-border: var(--color-border, #{_viewer-css-light-dark("light-dark(rgba(0, 0, 0, 0.1), rgba(255, 255, 255, 0.08))")});
-    --view-blockquote-border: var(--color-primary, #{_viewer-css-light-dark("light-dark(#2563eb, #5b8cff)")});
+    --view-blockquote-border: var(--color-primary, #{_viewer-css-light-dark("light-dark(#0d9488, #2dd4bf)")});
     --view-blockquote-bg: #{_viewer-css-light-dark("light-dark(rgba(0, 0, 0, 0.03), rgba(255, 255, 255, 0.04))")};
     --view-link-color: var(--color-link, #{_viewer-css-light-dark("light-dark(#06c, #7eb8ff)")});
     --view-link-hover: var(--color-link-hover, #{_viewer-css-light-dark("light-dark(#005fa3, #a8d0ff)")});
@@ -3977,21 +3977,26 @@
         /* View host: local control tokens (toolbar / fl-ui) stay inside the viewer subtree. */
         :where(.view-viewer, .cw-view-viewer-shell, cw-view-viewer[data-view="viewer"], cw-view-viewer[data-view-id="viewer"]) {
             @include viewer-view-tokens;
-            --color-on-surface: #{_viewer-css-light-dark("light-dark(#2d3748, #c4c9d4)")};
-            --color-primary: #{_viewer-css-light-dark("light-dark(#2563eb, #8ab4ff)")};
+            /* WHY: Keep wallpaper/JS --color-primary; only remap on-surface by scheme. */
+            --base-color: var(--color-primary, #00a3ad);
+            --color-on-surface: light-dark(
+                --u2-color-mod(var(--base-color), 860),
+                --u2-color-mod(var(--base-color), 120)
+            );
         }
 
         /*
         * WHY: Match resolved app theme so `light-dark()` in `--view-toolbar-bg` / prose tokens does not follow OS
         * while `html[data-theme]` & Theme.ts already locked the product to light or dark.
+        * Do NOT hardcode blue/purple primary — icons inherit wallpaper teal.
         */
         :host-context(html[data-theme="light"]),
         :host([data-theme="light"]),
         .view-viewer[data-theme="light"],
         .cw-view-viewer-shell[data-theme="light"] {
             color-scheme: light;
-            --color-on-surface: #2d3748;
-            --color-primary: #2563eb;
+            --base-color: var(--color-primary, #00a3ad);
+            --color-on-surface: --u2-color-mod(var(--base-color), 860);
         }
 
         :host-context(html[data-theme="dark"]),
@@ -3999,8 +4004,8 @@
         .view-viewer[data-theme="dark"],
         .cw-view-viewer-shell[data-theme="dark"] {
             color-scheme: dark;
-            --color-on-surface: #c4c9d4;
-            --color-primary: #8ab4ff;
+            --base-color: var(--color-primary, #00a3ad);
+            --color-on-surface: --u2-color-mod(var(--base-color), 120);
         }
 
         /*
@@ -4020,22 +4025,25 @@
         :host([data-theme="light"]) .view-viewer__toolbar,
         .view-viewer[data-theme="light"] .view-viewer__toolbar {
             color-scheme: light;
-            background: var(--viewer-toolbar-row-fill, #e8ecf4);
-            --color-on-surface: #1e293b;
-            --view-picon-fill: #1e293b;
-            --view-picon-fill-hover: #2563eb;
-            --color-surface-container-high: rgb(0 0 0 / 0.1);
+            --base-color: var(--color-primary, #00a3ad);
+            background: var(--viewer-toolbar-row-fill, --u2-color-mod(var(--base-color), 160));
+            --color-on-surface: --u2-color-mod(var(--base-color), 880);
+            --view-picon-fill: --u2-color-mod(var(--base-color), 780);
+            --view-picon-fill-hover: var(--color-primary, --u2-color-mod(var(--base-color), 550));
+            --color-surface-container-high: color-mix(in oklab, --u2-color-mod(var(--base-color), 900) 10%, transparent);
         }
 
         :host-context(html[data-theme="dark"]) .view-viewer__toolbar,
         :host([data-theme="dark"]) .view-viewer__toolbar,
         .view-viewer[data-theme="dark"] .view-viewer__toolbar {
             color-scheme: dark;
-            background: var(--viewer-toolbar-row-fill, #151f2e);
-            --color-on-surface: #e5e7eb;
-            --view-picon-fill: #e5e7eb;
-            --view-picon-fill-hover: var(--color-primary-hover, #93c5fd);
-            --color-surface-container-high: rgb(255 255 255 / 0.14);
+            --base-color: var(--color-primary, #00a3ad);
+            background: var(--viewer-toolbar-row-fill, --u2-color-mod(var(--base-color), 880));
+            --color-on-surface: --u2-color-mod(var(--base-color), 120);
+            /* Mid-light teal icons (not blue/purple #8ab4ff); hover = brighter seed. */
+            --view-picon-fill: --u2-color-mod(var(--base-color), 280);
+            --view-picon-fill-hover: --u2-color-mod(var(--base-color), 420);
+            --color-surface-container-high: color-mix(in oklab, --u2-color-mod(var(--base-color), 100) 14%, transparent);
         }
 
         /* Pill chrome only — keeps global `--color-surface` valid for minimal/base shell tokens on `:root`. */
