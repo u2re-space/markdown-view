@@ -11,57 +11,69 @@
  */
 
 @mixin markdown-viewer-host-theme-bridge() {
-    /* Pin viewer surface tokens on the slotted light-DOM host — survives late `:root` / Veela token updates */
-    :host([data-theme="light"]) ::slotted([data-view="viewer"]) {
-        color-scheme: light;
+    @scope (
+        markdown-view,
+        md-view,
+        .markdown-view,
+        cw-view-viewer,
+        .cw-view-viewer-shell,
+        :host(markdown-view),
+        :host(md-view),
+        :host(.markdown-view),
+        :host(cw-view-viewer)
+    ) {
+        /* Pin viewer surface tokens on the slotted light-DOM host — survives late `:root` / Veela token updates */
+        :host([data-theme="light"]) ::slotted([data-view="viewer"]) {
+            color-scheme: light;
 
-        --view-bg: #f4f6fa;
-        --view-fg: #1a1a1a;
-        --view-toolbar-bg: rgba(0, 0, 0, 0.06);
-        --view-btn-hover-bg: rgba(0, 0, 0, 0.07);
-        --view-code-bg: #f0f2f5;
-        --view-blockquote-bg: rgba(0, 0, 0, 0.03);
-        --color-on-surface: #2d3748;
-        --color-primary: #2563eb;
+            --view-bg: #f4f6fa;
+            --view-fg: #1a1a1a;
+            --view-toolbar-bg: rgba(0, 0, 0, 0.06);
+            --view-btn-hover-bg: rgba(0, 0, 0, 0.07);
+            --view-code-bg: #f0f2f5;
+            --view-blockquote-bg: rgba(0, 0, 0, 0.03);
+            --color-on-surface: #2d3748;
+            --color-primary: #2563eb;
 
-        /* Toolbar row (inherited into viewer shadow — replaces nested .view-viewer__toolbar rules) */
-        --viewer-toolbar-row-fill: #e8ecf4;
-        --view-picon-fill: #1e293b;
-        --view-picon-fill-hover: #2563eb;
-        --color-surface-container-high: rgb(0 0 0 / 0.1);
-    }
+            /* Toolbar row (inherited into viewer shadow — replaces nested .view-viewer__toolbar rules) */
+            --viewer-toolbar-row-fill: #e8ecf4;
+            --view-picon-fill: #1e293b;
+            --view-picon-fill-hover: #2563eb;
+            --color-surface-container-high: rgb(0 0 0 / 0.1);
+        }
 
-    :host([data-theme="dark"]) ::slotted([data-view="viewer"]) {
-        color-scheme: dark;
+        :host([data-theme="dark"]) ::slotted([data-view="viewer"]) {
+            color-scheme: dark;
 
-        --view-bg: #0b0d12;
-        --view-fg: #e8eaef;
-        --view-toolbar-bg: rgba(255, 255, 255, 0.06);
-        --view-btn-hover-bg: rgba(255, 255, 255, 0.08);
-        --view-code-bg: #161a22;
-        --view-blockquote-bg: rgba(255, 255, 255, 0.04);
-        --color-on-surface: #c4c9d4;
-        --color-primary: #8ab4ff;
+            --view-bg: #0b0d12;
+            --view-fg: #e8eaef;
+            --view-toolbar-bg: rgba(255, 255, 255, 0.06);
+            --view-btn-hover-bg: rgba(255, 255, 255, 0.08);
+            --view-code-bg: #161a22;
+            --view-blockquote-bg: rgba(255, 255, 255, 0.04);
+            --color-on-surface: #c4c9d4;
+            --color-primary: #8ab4ff;
 
-        --viewer-toolbar-row-fill: #151f2e;
-        --view-picon-fill: #e5e7eb;
-        --view-picon-fill-hover: var(--color-primary-hover, #93c5fd);
-        --color-surface-container-high: rgb(255 255 255 / 0.14);
-    }
+            --viewer-toolbar-row-fill: #151f2e;
+            --view-picon-fill: #e5e7eb;
+            --view-picon-fill-hover: var(--color-primary-hover, #93c5fd);
+            --color-surface-container-high: rgb(255 255 255 / 0.14);
+        }
 
-    /*
-     * Prose that stays in light DOM under the viewer host (slotted / adopted nodes).
-     * Descendant combinator after ::slotted is valid for elements under the assigned node.
-     */
-    :host([data-theme="light"]) ::slotted([data-view="viewer"]) :where(.markdown-body, [data-render-target].markdown-body) {
-        --color-surface: #ffffff;
-        --color-on-surface: #1a1a1a;
-        color-scheme: light;
-    }
+        /*
+        * Prose that stays in light DOM under the viewer host (slotted / adopted nodes).
+        * Descendant combinator after ::slotted is valid for elements under the assigned node.
+        */
+        :host([data-theme="light"]) ::slotted([data-view="viewer"]) :where(.markdown-body, [data-render-target].markdown-body) {
+            --color-surface: #ffffff;
+            --color-on-surface: #1a1a1a;
+            color-scheme: light;
+        }
 
-    :host([data-theme="dark"]) ::slotted([data-view="viewer"]) :where(.markdown-body, [data-render-target].markdown-body) {
-        --color-surface: #121212;
-        --color-on-surface: #e8eaef;
-        color-scheme: dark;
+        :host([data-theme="dark"]) ::slotted([data-view="viewer"]) :where(.markdown-body, [data-render-target].markdown-body) {
+            --color-surface: #121212;
+            --color-on-surface: #e8eaef;
+            color-scheme: dark;
+        }
     }
 }
