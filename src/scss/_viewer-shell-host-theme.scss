@@ -34,7 +34,7 @@
             color-scheme: light;
 
             /* Inherit wallpaper --color-primary; do not pin blue #2563eb. */
-            --base-color: var(--color-primary, #00a3ad);
+            --base-color: var(--color-primary, #5a7fff);
             --view-bg: var(--color-surface, --u2-color-mod(var(--base-color), 70));
             --view-fg: var(--color-on-surface, --u2-color-mod(var(--base-color), 900));
             --view-toolbar-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 900) 6%, transparent);
@@ -52,7 +52,7 @@
         :host([data-theme="dark"]) ::slotted([data-view="viewer"]) {
             color-scheme: dark;
 
-            --base-color: var(--color-primary, #00a3ad);
+            --base-color: var(--color-primary, #5a7fff);
             --view-bg: var(--color-surface, --u2-color-mod(var(--base-color), 960));
             --view-fg: var(--color-on-surface, --u2-color-mod(var(--base-color), 100));
             --view-toolbar-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 100) 6%, transparent);
