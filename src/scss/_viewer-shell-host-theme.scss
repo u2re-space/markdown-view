@@ -35,36 +35,38 @@
 
             /* Inherit wallpaper --color-primary; do not pin blue #2563eb. */
             --base-color: var(--color-primary, #5a7fff);
-            --view-bg: var(--color-surface, --u2-color-mod(var(--base-color), 70));
-            --view-fg: var(--color-on-surface, --u2-color-mod(var(--base-color), 900));
-            --view-toolbar-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 900) 6%, transparent);
-            --view-btn-hover-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 900) 7%, transparent);
-            --view-code-bg: --u2-color-mod(var(--base-color), 120);
-            --view-blockquote-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 900) 3%, transparent);
-            --color-on-surface: --u2-color-mod(var(--base-color), 980);
+            --base-color-neutralized: color-mix(in oklab, var(--base-color) 60%, gray);
+            --view-bg: var(--color-surface, --u2-color-mod(var(--base-color-neutralized), 70));
+            --view-fg: var(--color-on-surface, --u2-color-mod(var(--base-color-neutralized), 900));
+            --view-toolbar-bg: color-mix(in oklab, --u2-color-mod(var(--base-color-neutralized), 900) 6%, transparent);
+            --view-btn-hover-bg: color-mix(in oklab, --u2-color-mod(var(--base-color-neutralized), 900) 7%, transparent);
+            --view-code-bg: --u2-color-mod(var(--base-color-neutralized), 120);
+            --view-blockquote-bg: color-mix(in oklab, --u2-color-mod(var(--base-color-neutralized), 900) 3%, transparent);
+            --color-on-surface: --u2-color-mod(var(--base-color-neutralized), 980);
 
             --viewer-toolbar-row-fill: --u2-color-mod(var(--base-color), 160);
-            --view-picon-fill: --u2-color-mod(var(--base-color), 780);
-            --view-picon-fill-hover: var(--color-primary, --u2-color-mod(var(--base-color), 550));
-            --color-surface-container-high: color-mix(in oklab, --u2-color-mod(var(--base-color), 900) 10%, transparent);
+            --view-picon-fill: --u2-color-mod(var(--base-color-neutralized), 780);
+            --view-picon-fill-hover: var(--color-primary, --u2-color-mod(var(--base-color-neutralized), 550));
+            --color-surface-container-high: color-mix(in oklab, --u2-color-mod(var(--base-color-neutralized), 900) 10%, transparent);
         }
 
         :host([data-theme="dark"]) ::slotted([data-view="viewer"]) {
             color-scheme: dark;
 
             --base-color: var(--color-primary, #5a7fff);
-            --view-bg: var(--color-surface, --u2-color-mod(var(--base-color), 960));
-            --view-fg: var(--color-on-surface, --u2-color-mod(var(--base-color), 100));
-            --view-toolbar-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 100) 6%, transparent);
-            --view-btn-hover-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 100) 8%, transparent);
-            --view-code-bg: --u2-color-mod(var(--base-color), 900);
-            --view-blockquote-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 100) 4%, transparent);
-            --color-on-surface: --u2-color-mod(var(--base-color), 10);
+            --base-color-neutralized: color-mix(in oklab, var(--base-color) 60%, gray);
+            --view-bg: var(--color-surface, --u2-color-mod(var(--base-color-neutralized), 960));
+            --view-fg: var(--color-on-surface, --u2-color-mod(var(--base-color-neutralized), 100));
+            --view-toolbar-bg: color-mix(in oklab, --u2-color-mod(var(--base-color-neutralized), 100) 6%, transparent);
+            --view-btn-hover-bg: color-mix(in oklab, --u2-color-mod(var(--base-color-neutralized), 100) 8%, transparent);
+            --view-code-bg: --u2-color-mod(var(--base-color-neutralized), 900);
+            --view-blockquote-bg: color-mix(in oklab, --u2-color-mod(var(--base-color-neutralized), 100) 4%, transparent);
+            --color-on-surface: --u2-color-mod(var(--base-color-neutralized), 10);
 
-            --viewer-toolbar-row-fill: --u2-color-mod(var(--base-color), 880);
-            --view-picon-fill: --u2-color-mod(var(--base-color), 280);
-            --view-picon-fill-hover: --u2-color-mod(var(--base-color), 420);
-            --color-surface-container-high: color-mix(in oklab, --u2-color-mod(var(--base-color), 100) 14%, transparent);
+            --viewer-toolbar-row-fill: --u2-color-mod(var(--base-color-neutralized), 880);
+            --view-picon-fill: --u2-color-mod(var(--base-color-neutralized), 280);
+            --view-picon-fill-hover: --u2-color-mod(var(--base-color-neutralized), 420);
+            --color-surface-container-high: color-mix(in oklab, --u2-color-mod(var(--base-color-neutralized), 100) 14%, transparent);
         }
 
         /*
@@ -72,14 +74,16 @@
         * Descendant combinator after ::slotted is valid for elements under the assigned node.
         */
         :host([data-theme="light"]) ::slotted([data-view="viewer"]) :where(.markdown-body, [data-render-target].markdown-body) {
-            --color-surface: --u2-color-mod(var(--base-color, var(--color-primary)), 10);
-            --color-on-surface: --u2-color-mod(var(--base-color, var(--color-primary)), 980);
+            --base-color-neutralized: color-mix(in oklab, var(--base-color) 60%, gray);
+            --color-surface: --u2-color-mod(var(--base-color-neutralized, var(--color-primary)), 10);
+            --color-on-surface: --u2-color-mod(var(--base-color-neutralized, var(--color-primary)), 980);
             color-scheme: light;
         }
 
         :host([data-theme="dark"]) ::slotted([data-view="viewer"]) :where(.markdown-body, [data-render-target].markdown-body) {
-            --color-surface: --u2-color-mod(var(--base-color, var(--color-primary)), 980);
-            --color-on-surface: --u2-color-mod(var(--base-color, var(--color-primary)), 10);
+            --base-color-neutralized: color-mix(in oklab, var(--base-color) 60%, gray);
+            --color-surface: --u2-color-mod(var(--base-color-neutralized, var(--color-primary)), 980);
+            --color-on-surface: --u2-color-mod(var(--base-color-neutralized, var(--color-primary)), 10);
             color-scheme: dark;
         }
     }

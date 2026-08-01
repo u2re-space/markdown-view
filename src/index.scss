@@ -68,12 +68,13 @@
     * (`--shell-fg` ← `--color-on-surface`). Control tokens live under `.view-viewer` only (below).
     * Transparent pill chrome belongs on `.view-viewer__toolbar` only (not `--color-surface` on `:root`).
     */
-    --view-bg: var(--color-surface, light-dark(--u2-color-mod(var(--base-color, var(--color-primary, #5a7fff)), 70), --u2-color-mod(var(--base-color, var(--color-primary, #5a7fff)), 960)));
-    --view-fg: var(--color-on-surface, light-dark(--u2-color-mod(var(--base-color, var(--color-primary, #5a7fff)), 900), --u2-color-mod(var(--base-color, var(--color-primary, #5a7fff)), 100)));
+    --base-color-neutralized: color-mix(in oklab, var(--base-color) 60%, gray);
+    --view-bg: var(--color-surface, light-dark(--u2-color-mod(var(--base-color-neutralized), 70), --u2-color-mod(var(--base-color-neutralized), 960)));
+    --view-fg: var(--color-on-surface, light-dark(--u2-color-mod(var(--base-color-neutralized), 900), --u2-color-mod(var(--base-color-neutralized), 100)));
     --view-border: var(--color-border, color-mix(in oklab, var(--view-fg) 12%, transparent));
     --view-toolbar-bg: color-mix(in oklab, var(--view-fg) 5%, transparent);
     --view-btn-hover-bg: color-mix(in oklab, var(--view-fg) 8%, transparent);
-    --view-code-bg: light-dark(--u2-color-mod(var(--base-color, var(--color-primary, #5a7fff)), 120), --u2-color-mod(var(--base-color, var(--color-primary, #5a7fff)), 900));
+    --view-code-bg: light-dark(--u2-color-mod(var(--base-color-neutralized), 120), --u2-color-mod(var(--base-color-neutralized), 900));
     --view-code-fg: #{_viewer-css-light-dark("light-dark(var(--color-text, #1a1a1a), #d8dce6)")};
     --view-code-border: var(--color-border, #{_viewer-css-light-dark("light-dark(rgba(0, 0, 0, 0.1), rgba(255, 255, 255, 0.08))")});
     --view-blockquote-border: var(--color-primary, #{_viewer-css-light-dark("light-dark(#0d9488, #2dd4bf)")});
@@ -3979,9 +3980,10 @@
             @include viewer-view-tokens;
             /* WHY: Keep wallpaper/JS --color-primary; only remap on-surface by scheme. */
             --base-color: var(--color-primary, #5a7fff);
+            --base-color-neutralized: color-mix(in oklab, var(--base-color) 60%, gray);
             --color-on-surface: light-dark(
-                --u2-color-mod(var(--base-color), 980),
-                --u2-color-mod(var(--base-color), 20)
+                --u2-color-mod(var(--base-color-neutralized), 980),
+                --u2-color-mod(var(--base-color-neutralized), 20)
             );
         }
 
@@ -3996,7 +3998,8 @@
         .cw-view-viewer-shell[data-theme="light"] {
             color-scheme: light;
             --base-color: var(--color-primary, #5a7fff);
-            --color-on-surface: --u2-color-mod(var(--base-color), 860);
+            --base-color-neutralized: color-mix(in oklab, var(--base-color) 60%, gray);
+            --color-on-surface: --u2-color-mod(var(--base-color-neutralized), 860);
         }
 
         :host-context(html[data-theme="dark"]),
@@ -4005,7 +4008,8 @@
         .cw-view-viewer-shell[data-theme="dark"] {
             color-scheme: dark;
             --base-color: var(--color-primary, #5a7fff);
-            --color-on-surface: --u2-color-mod(var(--base-color), 120);
+            --base-color-neutralized: color-mix(in oklab, var(--base-color) 60%, gray);
+            --color-on-surface: --u2-color-mod(var(--base-color-neutralized), 120);
         }
 
         /*
@@ -4026,11 +4030,12 @@
         .view-viewer[data-theme="light"] .view-viewer__toolbar {
             color-scheme: light;
             --base-color: var(--color-primary, #5a7fff);
-            background: var(--viewer-toolbar-row-fill, --u2-color-mod(var(--base-color), 160));
-            --color-on-surface: --u2-color-mod(var(--base-color), 880);
-            --view-picon-fill: --u2-color-mod(var(--base-color), 780);
-            --view-picon-fill-hover: var(--color-primary, --u2-color-mod(var(--base-color), 550));
-            --color-surface-container-high: color-mix(in oklab, --u2-color-mod(var(--base-color), 900) 10%, transparent);
+            --base-color-neutralized: color-mix(in oklab, var(--base-color) 60%, gray);
+            background: var(--viewer-toolbar-row-fill, --u2-color-mod(var(--base-color-neutralized), 160));
+            --color-on-surface: --u2-color-mod(var(--base-color-neutralized), 880);
+            --view-picon-fill: --u2-color-mod(var(--base-color-neutralized), 780);
+            --view-picon-fill-hover: var(--color-primary, --u2-color-mod(var(--base-color-neutralized), 550));
+            --color-surface-container-high: color-mix(in oklab, --u2-color-mod(var(--base-color-neutralized), 900) 10%, transparent);
         }
 
         :host-context(html[data-theme="dark"]) .view-viewer__toolbar,
@@ -4038,12 +4043,13 @@
         .view-viewer[data-theme="dark"] .view-viewer__toolbar {
             color-scheme: dark;
             --base-color: var(--color-primary, #5a7fff);
-            background: var(--viewer-toolbar-row-fill, --u2-color-mod(var(--base-color), 880));
-            --color-on-surface: --u2-color-mod(var(--base-color), 120);
+            --base-color-neutralized: color-mix(in oklab, var(--base-color) 60%, gray);
+            background: var(--viewer-toolbar-row-fill, --u2-color-mod(var(--base-color-neutralized), 880));
+            --color-on-surface: --u2-color-mod(var(--base-color-neutralized), 120);
             /* Mid-light teal icons (not blue/purple #8ab4ff); hover = brighter seed. */
-            --view-picon-fill: --u2-color-mod(var(--base-color), 280);
-            --view-picon-fill-hover: --u2-color-mod(var(--base-color), 420);
-            --color-surface-container-high: color-mix(in oklab, --u2-color-mod(var(--base-color), 100) 14%, transparent);
+            --view-picon-fill: --u2-color-mod(var(--base-color-neutralized), 280);
+            --view-picon-fill-hover: --u2-color-mod(var(--base-color-neutralized), 420);
+            --color-surface-container-high: color-mix(in oklab, --u2-color-mod(var(--base-color-neutralized), 100) 14%, transparent);
         }
 
         /* Pill chrome only — keeps global `--color-surface` valid for minimal/base shell tokens on `:root`. */
