@@ -3980,8 +3980,8 @@
             /* WHY: Keep wallpaper/JS --color-primary; only remap on-surface by scheme. */
             --base-color: var(--color-primary, #5a7fff);
             --color-on-surface: light-dark(
-                --u2-color-mod(var(--base-color), 860),
-                --u2-color-mod(var(--base-color), 120)
+                --u2-color-mod(var(--base-color), 980),
+                --u2-color-mod(var(--base-color), 20)
             );
         }
 

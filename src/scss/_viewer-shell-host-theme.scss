@@ -41,7 +41,7 @@
             --view-btn-hover-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 900) 7%, transparent);
             --view-code-bg: --u2-color-mod(var(--base-color), 120);
             --view-blockquote-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 900) 3%, transparent);
-            --color-on-surface: --u2-color-mod(var(--base-color), 860);
+            --color-on-surface: --u2-color-mod(var(--base-color), 980);
 
             --viewer-toolbar-row-fill: --u2-color-mod(var(--base-color), 160);
             --view-picon-fill: --u2-color-mod(var(--base-color), 780);
@@ -59,7 +59,7 @@
             --view-btn-hover-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 100) 8%, transparent);
             --view-code-bg: --u2-color-mod(var(--base-color), 900);
             --view-blockquote-bg: color-mix(in oklab, --u2-color-mod(var(--base-color), 100) 4%, transparent);
-            --color-on-surface: --u2-color-mod(var(--base-color), 120);
+            --color-on-surface: --u2-color-mod(var(--base-color), 10);
 
             --viewer-toolbar-row-fill: --u2-color-mod(var(--base-color), 880);
             --view-picon-fill: --u2-color-mod(var(--base-color), 280);
@@ -72,14 +72,14 @@
         * Descendant combinator after ::slotted is valid for elements under the assigned node.
         */
         :host([data-theme="light"]) ::slotted([data-view="viewer"]) :where(.markdown-body, [data-render-target].markdown-body) {
-            --color-surface: --u2-color-mod(var(--base-color, var(--color-primary)), 40);
-            --color-on-surface: --u2-color-mod(var(--base-color, var(--color-primary)), 900);
+            --color-surface: --u2-color-mod(var(--base-color, var(--color-primary)), 10);
+            --color-on-surface: --u2-color-mod(var(--base-color, var(--color-primary)), 980);
             color-scheme: light;
         }
 
         :host([data-theme="dark"]) ::slotted([data-view="viewer"]) :where(.markdown-body, [data-render-target].markdown-body) {
-            --color-surface: --u2-color-mod(var(--base-color, var(--color-primary)), 950);
-            --color-on-surface: --u2-color-mod(var(--base-color, var(--color-primary)), 100);
+            --color-surface: --u2-color-mod(var(--base-color, var(--color-primary)), 980);
+            --color-on-surface: --u2-color-mod(var(--base-color, var(--color-primary)), 10);
             color-scheme: dark;
         }
     }
