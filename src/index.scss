@@ -147,6 +147,28 @@
             /* units */
             --view-code-font-size: 0.9em;
         }
+
+        /*
+         * WHY: Concrete pins — `light-dark(--view-bg/--view-fg)` followed OS while QS said Light.
+         * Shadow shells: :host-context. Env ui-window: ancestor [data-theme] on host chain.
+         */
+        :host-context(html[data-theme="light"]),
+        :host-context([data-theme="light"]),
+        :host([data-theme="light"]) {
+            color-scheme: light only;
+            --view-bg: var(--color-surface, --u2-color-mod(var(--base-color-neutralized, var(--base-color, #5a7fff)), 60));
+            --view-fg: var(--color-on-surface, --u2-color-mod(var(--base-color-neutralized, var(--base-color, #5a7fff)), 900));
+            --view-code-bg: --u2-color-mod(var(--base-color-neutralized, var(--base-color, #5a7fff)), 120);
+        }
+
+        :host-context(html[data-theme="dark"]),
+        :host-context([data-theme="dark"]),
+        :host([data-theme="dark"]) {
+            color-scheme: dark only;
+            --view-bg: var(--color-surface, --u2-color-mod(var(--base-color-neutralized, var(--base-color, #5a7fff)), 940));
+            --view-fg: var(--color-on-surface, --u2-color-mod(var(--base-color-neutralized, var(--base-color, #5a7fff)), 100));
+            --view-code-bg: --u2-color-mod(var(--base-color-neutralized, var(--base-color, #5a7fff)), 900);
+        }
     }
 
     @layer viewer.base {
