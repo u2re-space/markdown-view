@@ -2781,6 +2781,9 @@
             display: flex;
             justify-content: flex-end;
             gap: var(--space-md);
+            background: transparent;
+            border: none 0px transparent;
+            outline: none 0px transparent;
         }
 
         .card {
