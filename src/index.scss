@@ -72,7 +72,7 @@
     --view-bg: var(--color-surface, light-dark(--u2-color-mod(var(--base-color-neutralized), 70), --u2-color-mod(var(--base-color-neutralized), 960)));
     --view-fg: var(--color-on-surface, light-dark(--u2-color-mod(var(--base-color-neutralized), 900), --u2-color-mod(var(--base-color-neutralized), 100)));
     --view-border: var(--color-border, color-mix(in oklab, var(--view-fg) 12%, transparent));
-    --view-toolbar-bg: color-mix(in oklab, var(--view-fg) 5%, transparent);
+    --view-toolbar-bg: color-mix(in oklab, var(--view-fg) 0%, transparent);
     --view-btn-hover-bg: color-mix(in oklab, var(--view-fg) 8%, transparent);
     --view-code-bg: light-dark(--u2-color-mod(var(--base-color-neutralized), 120), --u2-color-mod(var(--base-color-neutralized), 900));
     --view-code-fg: #{_viewer-css-light-dark("light-dark(var(--color-text, #1a1a1a), #d8dce6)")};
@@ -401,9 +401,9 @@
                 content: "";
                 position: absolute;
                 inset: 0;
-                background: linear-gradient(180deg,
+                /*background: linear-gradient(180deg,
                         rgba(255, 255, 255, 0.03) 0%,
-                        transparent 100%);
+                        transparent 100%);*/
                 pointer-events: none;
             }
 
@@ -2117,10 +2117,10 @@
                 content: "";
                 position: absolute;
                 inset: 0;
-                background: linear-gradient(90deg,
+                /*background: linear-gradient(90deg,
                         color-mix(in oklab, var(--color-primary) 2%, transparent) 0%,
                         transparent 50%,
-                        color-mix(in oklab, var(--color-primary) 2%, transparent) 100%);
+                        color-mix(in oklab, var(--color-primary) 2%, transparent) 100%);*/
                 pointer-events: none;
             }
 
@@ -3521,6 +3521,7 @@
                 visibility: hidden !important;
                 opacity: 0 !important;
                 pointer-events: none !important;
+                background-color: transparent !important;
             }
 
             [data-app-layer="shell"] {
