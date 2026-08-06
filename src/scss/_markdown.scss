@@ -16,6 +16,11 @@
  *  - color-mix(in oklab, …) для полупрозрачных границ
  *  - print: grayscale через filter: grayscale(1) только на img/svg
  *  - !important только там, где реально нужно бороться с внешним JS-стилем
+ *
+ * NOTE: `--md-*` are a markdown-specific semantic layer GENERATED from canonical
+ * `--color-*` via the parameterized `md-vars($mode)` mixin (source of truth: veela
+ * `core/misc/_tokens.scss`). `--print-*` color defaults are concrete `light-dark(#…)` scoped to
+ * markdown-view hosts. Both already trace to canonical `--color-*` for value unity.
  */
 
 @use "core/misc/config" as config;

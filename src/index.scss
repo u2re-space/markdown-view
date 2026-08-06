@@ -2,6 +2,13 @@
 @use "veela-lib" as *;
 @use "veela-lib" as ui;
 
+/*
+ * NOTE: `--view-*` here are a viewer-specific semantic layer DERIVED from canonical
+ * `--color-*` (source of truth: veela `core/misc/_tokens.scss`) with `light-dark()`
+ * fallbacks for shadow-DOM self-sufficiency. They are not duplicates of canonical
+ * color values; keep the fallbacks.
+ */
+
 /// Literal CSS `light-dark()` — Veela defines SCSS `light-dark($name)` (one arg), so call this instead.
 @function _viewer-css-light-dark($css) {
     @return string.unquote($css);
@@ -49,6 +56,11 @@
 // boundary into toolbar chrome. Never use `:host(.inner-class)` — `:host` only matches the host element;
 // wrong compounds can invalidate an entire comma-separated selector list.
 //
+// NOTE: `--view-*` here are a viewer-specific semantic layer DERIVED from canonical
+// `--color-*` (source of truth: veela `core/misc/_tokens.scss`). This mixin is the
+// parameterized form (kept per plan); it references canonical `--color-*` with `light-dark()`
+// fallbacks for shadow-DOM self-sufficiency. The shared `--view-border/fg-muted/hover-bg/
+// selected-bg/selected-border` BASE defaults also live in canonical `:root`.
 @mixin viewer-view-tokens {
     /* layout */
     --view-layout: "flex";
