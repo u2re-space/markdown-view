@@ -7,12 +7,12 @@
  *   `__content` wrapping `<slot name="raw">` + default `<slot>`); light DOM = `<pre slot="raw">` + prose `[data-render-target]`.
  */
 
-import { H, normalizeDataAsset, parseDataUrl, isBase64Like, decodeBase64ToBytes, openDirectory, provide, defineElement } from "fest/lure";
-import { ref, affected } from "fest/object";
-import { loadAsAdopted, removeAdopted } from "fest/dom";
+import { H, normalizeDataAsset, parseDataUrl, isBase64Like, decodeBase64ToBytes, openDirectory, provide, defineElement } from "@fest-lib/lure";
+import { ref, affected } from "@fest-lib/object";
+import { loadAsAdopted, removeAdopted } from "@fest-lib/dom";
 import DOMPurify from 'dompurify';
 import renderMathInElement from "katex/dist/contrib/auto-render.mjs";
-import { ensureStyleSheet, reinitializeRegistry } from "fest/icon";
+import { ensureStyleSheet, reinitializeRegistry } from "@fest-lib/icon";
 import type { BaseViewOptions, ShellContext, ViewLifecycle, ViewOptions, ViewId } from "views/types";
 import type { View } from "shells/types";
 import { ingressStampWasSuperseded } from "com/routing/core/channel-mixin";
@@ -34,7 +34,7 @@ import {
 } from "./theme";
 
 // Import fest/fl-ui (e.g. shared markdown utilities elsewhere)
-import "fest/icon";
+import "@fest-lib/icon";
 
 // @ts-ignore - SCSS import
 import style from "./index.scss?inline";
@@ -2673,7 +2673,7 @@ export interface ViewerDocument {
  *   <md-view src="/path/to/file.md"></md-view>
  *
  *   // Class-based API
- *   import { createMarkdownViewer } from "fest/fl-ui/services/markdown-view";
+ *   import { createMarkdownViewer } from "@fest-lib/fl-ui/services/markdown-view";
  *   const viewer = createMarkdownViewer({ content: "# Hello", showActions: true });
  *   document.body.append(viewer.render());
  *
