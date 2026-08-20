@@ -947,6 +947,44 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         const sourceParam = params.source || params.src || params.path || params.url;
         if (sourceParam) {
             const sp = String(sourceParam).trim();
+            /*
+             * WHY: Inline open-link used to route http(s) into this markdown viewer, which
+             * fetches the page and tries to render HTML as markdown (GitHub, etc.).
+             * Hand web URLs to the iframe browser window instead.
+             */
+            const looksWeb =
+                /^https?:\/\//i.test(sp) ||
+                /^\/\//.test(sp) ||
+                /^www\./i.test(sp);
+            const looksMarkdownFile = /\.(?:md|markdown|txt|mdx)(?:$|[?#])/i.test(sp);
+            if (looksWeb && !looksMarkdownFile) {
+                const href = /^https?:\/\//i.test(sp)
+                    ? sp
+                    : /^\/\//.test(sp)
+                      ? `https:${sp}`
+                      : `https://${sp.replace(/^\/+/, "")}`;
+                try {
+                    const open =
+                        this.shellContext?.openView ||
+                        this.shellContext?.navigate ||
+                        this.options?.shellContext?.openView ||
+                        this.options?.shellContext?.navigate;
+                    if (typeof open === "function") {
+                        void Promise.resolve(
+                            open("browser", {
+                                params: { url: href, href },
+                                url: href,
+                                href
+                            } as any)
+                        ).catch(() => {
+                            /* ignore */
+                        });
+                        return;
+                    }
+                } catch (e) {
+                    console.warn("[Viewer] redirect web URL to browser failed", e);
+                }
+            }
             const isExt =
                 typeof globalThis.location !== "undefined" &&
                 globalThis.location.protocol === "chrome-extension:";

@@ -3442,6 +3442,16 @@
     }
 
     @layer overrides {
+        [data-app-layer="canvas"],
+        [data-app-layer="orient"],
+        [data-app-layer="overlay"] {
+            position: fixed;
+            inset: 0;
+            inset-block-end: auto;
+            inline-size: max(100%, 100lvi);
+            block-size: max(100%, 100lvb);
+        }
+
         @media (max-inline-size: 768px) {
             .toolbar {
                 padding: var(--space-sm);
