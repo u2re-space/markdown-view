@@ -332,6 +332,9 @@ export class MarkdownView extends UIElement {
             if (URL.canParse(fileStr) ||
                 fileStr.startsWith("blob:") ||
                 fileStr.startsWith("/user/") ||
+                fileStr.startsWith("/mounts/") ||
+                fileStr.startsWith("/sdcard/") ||
+                fileStr.startsWith("/saf/") ||
                 fileStr.startsWith("./") ||
                 fileStr.startsWith("../")) {
                 try {

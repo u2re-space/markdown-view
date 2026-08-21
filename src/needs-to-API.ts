@@ -7,7 +7,7 @@
  *   `__content` wrapping `<slot name="raw">` + default `<slot>`); light DOM = `<pre slot="raw">` + prose `[data-render-target]`.
  */
 
-import { H, normalizeDataAsset, parseDataUrl, isBase64Like, decodeBase64ToBytes, openDirectory, provide, defineElement } from "@fest-lib/lure";
+import { H, normalizeDataAsset, parseDataUrl, isBase64Like, decodeBase64ToBytes, openDirectory, provide, defineElement, getDir, normalizePath, isVirtualFsPath, registerDirectoryRoot, matchMappedRoot } from "@fest-lib/lure";
 import { ref, affected } from "@fest-lib/object";
 import { loadAsAdopted, removeAdopted } from "@fest-lib/dom";
 import DOMPurify from 'dompurify';
@@ -38,6 +38,23 @@ import "@fest-lib/icon";
 
 // @ts-ignore - SCSS import
 import style from "./index.scss?inline";
+
+const findEntryRelPath = async (
+    dir: FileSystemDirectoryHandle,
+    target: FileSystemFileHandle
+): Promise<string | null> => {
+    for await (const [name, handle] of dir.entries()) {
+        if (handle.kind === "file") {
+            try {
+                if (await handle.isSameEntry(target)) return name;
+            } catch { /* different backends */ }
+        } else if (handle.kind === "directory") {
+            const inner = await findEntryRelPath(handle, target);
+            if (inner) return `${name}/${inner}`;
+        }
+    }
+    return null;
+};
 import type { MarkedExtension } from "marked";
 
 let markedParserPromise: Promise<(markdown: string) => Promise<string>> | null = null;
@@ -284,6 +301,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private isViewVisible = false;
     private isPointerInView = false;
     private sourceUrl: string | null = null;
+    private assetObjectUrls: string[] = [];
+    private sourceObserver: { disconnect?: () => void } | null = null;
     private customSheet: CSSStyleSheet | null = null;
     private userStyleModules: { screenCss: string; printCss: string } = { screenCss: "", printCss: "" };
     private markdownSettings: ViewerMarkdownSettings = {
@@ -868,8 +887,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     mdRoot.className = "view-viewer__md-root";
                     mdRoot.innerHTML = sanitized;
                     renderTarget.append(outlineNav, mdRoot);
-                    this.resolveRelativeResourceUrls(mdRoot);
+                    void this.resolveRelativeResourceUrls(mdRoot);
                     this.applyRenderedLinkBehavior(mdRoot);
+                    this.watchVirtualSource(this.sourceUrl);
                     this.refreshDocumentOutline(outlineNav, mdRoot);
                     this.syncOutlineToolbarState();
                     this.syncToolbarDocumentTitle(mdRoot);
@@ -901,11 +921,56 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private normalizeSourceUrl(source?: string | null): string | null {
         const raw = (source || "").trim();
         if (!raw) return null;
+        if (isVirtualFsPath(raw)) {
+            return raw.startsWith("/") ? raw : `/${raw}`;
+        }
         try {
-            return new URL(raw, globalThis.location.href).toString();
+            const url = new URL(raw, globalThis.location.href);
+            if (isVirtualFsPath(url.pathname)) return url.pathname;
+            return url.toString();
         } catch {
             return null;
         }
+    }
+
+    private revokeAssetUrls(): void {
+        for (const url of this.assetObjectUrls) {
+            try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+        }
+        this.assetObjectUrls = [];
+    }
+
+    private watchVirtualSource(source?: string | null): void {
+        this.sourceObserver?.disconnect?.();
+        this.sourceObserver = null;
+        const path = this.normalizeSourceUrl(source);
+        if (!path || !isVirtualFsPath(path)) return;
+        const Ctor = (globalThis as { FileSystemObserver?: new (cb: Function) => { observe: Function; disconnect: Function } })
+            .FileSystemObserver;
+        if (typeof Ctor !== "function") return;
+        void provide(path).then(async () => {
+            const nav: any = navigator;
+            const getDirHandle = nav?.storage?.getDirectory;
+            let handle: FileSystemDirectoryHandle | null = null;
+            try {
+                const mapped = matchMappedRoot(getDir(path));
+                const resolved = mapped ? await mapped.resolver() : null;
+                handle = resolved instanceof FileSystemDirectoryHandle ? resolved : null;
+                if (!handle && typeof getDirHandle === "function" && path.startsWith("/user/")) {
+                    handle = await getDirHandle.call(nav.storage);
+                }
+            } catch {
+                return;
+            }
+            if (!handle) return;
+            try {
+                const observer = new Ctor(() => this.onRefresh());
+                void observer.observe(handle);
+                this.sourceObserver = observer;
+            } catch {
+                /* experimental FileSystemObserver */
+            }
+        });
     }
 
     private applyRouteParams(params?: Record<string, unknown>): void {
@@ -1000,6 +1065,13 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         const contentParam = String(params.content || "");
         if (contentParam.trim()) {
             this.contentRef.value = contentParam;
+        } else if (sourceParam && isVirtualFsPath(String(sourceParam))) {
+            void provide(String(sourceParam)).then(async (file) => {
+                if (!file) return;
+                const text = await file.text().catch(() => "");
+                if (!text) return;
+                this.ingestOpenedMarkdownBody(text, filenameParam ? String(filenameParam) : file.name, String(sourceParam));
+            });
         }
         if (this.element) {
             this.syncToolbarDocumentTitle();
@@ -1097,6 +1169,10 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             return value;
         }
 
+        if (isVirtualFsPath(this.sourceUrl)) {
+            return normalizePath(getDir(this.sourceUrl), value);
+        }
+
         try {
             return new URL(value, this.sourceUrl).toString();
         } catch {
@@ -1104,11 +1180,12 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
     }
 
-    private resolveRelativeResourceUrls(root: HTMLElement): void {
+    private async resolveRelativeResourceUrls(root: HTMLElement): Promise<void> {
+        this.revokeAssetUrls();
         const extPage = globalThis.location?.protocol === "chrome-extension:";
         const fileBacked = Boolean(this.sourceUrl?.startsWith("file:"));
 
-        const apply = (selector: string, attr: "src" | "href", mode: "link" | "media") => {
+        const apply = async (selector: string, attr: "src" | "href", mode: "link" | "media") => {
             const nodes = Array.from(root.querySelectorAll(selector)) as HTMLElement[];
             for (const node of nodes) {
                 const current = (node.getAttribute(attr) || "").trim();
@@ -1116,6 +1193,21 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 const resolved = this.resolveUrlAgainstSource(current);
                 if (!resolved) {
                     node.removeAttribute(attr);
+                    continue;
+                }
+                if (isVirtualFsPath(resolved)) {
+                    if (mode === "media") {
+                        const file = await provide(resolved).catch(() => null);
+                        if (file) {
+                            const blobUrl = URL.createObjectURL(file);
+                            this.assetObjectUrls.push(blobUrl);
+                            node.setAttribute(attr, blobUrl);
+                        } else {
+                            node.removeAttribute(attr);
+                        }
+                        continue;
+                    }
+                    node.setAttribute(attr, resolved);
                     continue;
                 }
                 // Extension viewer + file-backed source: do not inject file:// into the DOM.
@@ -1137,12 +1229,12 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             }
         };
 
-        apply("img[src]", "src", "media");
-        apply("source[src]", "src", "media");
-        apply("video[src]", "src", "media");
-        apply("audio[src]", "src", "media");
-        apply("track[src]", "src", "media");
-        apply("a[href]", "href", "link");
+        await apply("img[src]", "src", "media");
+        await apply("source[src]", "src", "media");
+        await apply("video[src]", "src", "media");
+        await apply("audio[src]", "src", "media");
+        await apply("track[src]", "src", "media");
+        await apply("a[href]", "href", "link");
     }
 
     private isLikelyMarkdownUrl(value: string): boolean {
@@ -1193,6 +1285,14 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
         const normalizedSource = this.normalizeSourceUrl(source);
         if (!normalizedSource) return false;
+        if (isVirtualFsPath(normalizedSource)) {
+            const file = await provide(normalizedSource).catch(() => null);
+            const markdown = file ? await file.text().catch(() => null) : null;
+            if (!markdown) return false;
+            this.ingestOpenedMarkdownBody(markdown, filename || file?.name, normalizedSource);
+            this.showMessage(filename ? `Opened ${filename}` : "Opened markdown link");
+            return true;
+        }
         const markdown = await this.fetchMarkdownFromUrl(normalizedSource);
         if (markdown === null) return false;
         this.ingestOpenedMarkdownBody(markdown, filename, normalizedSource);
@@ -1321,6 +1421,39 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private handleOpen(): void {
+        const pickDir = (globalThis as { showDirectoryPicker?: (opts?: { mode?: string; id?: string }) => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker;
+        const pickFile = (globalThis as { showOpenFilePicker?: (opts?: Record<string, unknown>) => Promise<FileSystemFileHandle[]> }).showOpenFilePicker;
+        if (typeof pickDir === "function" && typeof pickFile === "function") {
+            void (async () => {
+                try {
+                    const dir = await pickDir({ mode: "readwrite", id: "markdown-assets" });
+                    const root = `/mounts/md-${Date.now().toString(36)}/`;
+                    registerDirectoryRoot(root, dir);
+                    const [fileHandle] = await pickFile({
+                        startIn: dir,
+                        multiple: false,
+                        types: [{
+                            description: "Markdown",
+                            accept: { "text/markdown": [".md", ".markdown", ".mdown", ".mkd"], "text/plain": [".txt"] }
+                        }]
+                    });
+                    const rel = (await findEntryRelPath(dir, fileHandle)) || fileHandle.name;
+                    const virtual = `${root}${rel}`;
+                    const file = await fileHandle.getFile();
+                    this.setContent(await file.text(), file.name, virtual);
+                    this.showMessage(`Opened ${file.name}`);
+                } catch (error) {
+                    if ((error as DOMException)?.name === "AbortError") return;
+                    console.warn("[ViewerView] Directory picker open failed, falling back:", error);
+                    this.handleOpenInputFallback();
+                }
+            })();
+            return;
+        }
+        this.handleOpenInputFallback();
+    }
+
+    private handleOpenInputFallback(): void {
         const input = document.createElement("input");
         input.type = "file";
         input.accept = ".md,.markdown,.mdown,.mkd,.mkdn,.mdtxt,.mdtext,.txt,text/markdown,text/plain,text/md";
@@ -2418,6 +2551,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.saveState();
         this.isViewVisible = false;
         this.isPointerInView = false;
+        this.revokeAssetUrls();
+        this.sourceObserver?.disconnect?.();
+        this.sourceObserver = null;
         console.log("[Viewer] Hidden");
     }
 
