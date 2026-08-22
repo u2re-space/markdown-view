@@ -5,8 +5,7 @@
  * markdown-viewer.scss — optimized/refactored
  *
  * Стратегия:
- *  - @layer: tokens → markdown → overrides → print → print-breaks
- *    (каждый следующий слой побеждает предыдущий без !important)
+ *  - @layer order: veela `_layers.scss` SoT (do not declare a shorter prelude)
  *  - light-dark() + color-scheme: inherit — вместо двух @media prefers-color-scheme
  *  - @each по SCSS-map для heading-размеров (одно место правды)
  *  - %img-align placeholder — устраняет 7-кратный повтор [align] / [width] / [height]
@@ -23,14 +22,14 @@
  * markdown-view hosts. Both already trace to canonical `--color-*` for value unity.
  */
 
+@use "sass:map";
+@use "sass:list";
+@use "layers";
 @use "core/misc/config" as config;
 @use "core/misc/tokens" as tokens;
 @use "core/misc/mixins" as mixins;
 
-@use "sass:map";
-@use "sass:list";
 @import "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap";
-@layer tokens, markdown, overrides, print, print-breaks;
 
 /* ─── Animations ──────────────────────────────────────────────────────────── */
 

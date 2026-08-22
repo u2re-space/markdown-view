@@ -1,4 +1,5 @@
 @use "sass:string";
+@use "layers";
 @use "veela-lib" as *;
 @use "veela-lib" as ui;
 
@@ -125,9 +126,6 @@
     :host(.markdown-view),
     :host(cw-view-viewer)
 ) {
-    @layer tokens, base, layout, utilities, shells, shell, views, view, viewer, components, ux-layer, markdown, essentials, print, print-breaks, view-transitions, overrides;
-
-    //
     @layer viewer.tokens {
 
         :host,
