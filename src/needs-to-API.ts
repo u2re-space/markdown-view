@@ -7,11 +7,10 @@
  *   `__content` wrapping `<slot name="raw">` + default `<slot>`); light DOM = `<pre slot="raw">` + prose `[data-render-target]`.
  */
 
-import { H, normalizeDataAsset, parseDataUrl, isBase64Like, decodeBase64ToBytes, openDirectory, provide, defineElement, getDir, normalizePath, isVirtualFsPath, matchMappedRoot, pickAssetDirectory, mountPickedDirectory, observeFileSystemHandle, findEntryRelPath } from "@fest-lib/lure";
+import { H, normalizeDataAsset, parseDataUrl, isBase64Like, decodeBase64ToBytes, openDirectory, provide, defineElement, getDir, normalizePath, isVirtualFsPath, matchMappedRoot, pickAssetDirectory, mountPickedDirectory, observeFileSystemHandle, findEntryRelPath, resolveFileUnderDirectory, relPathCandidates, indexDirectoryFiles } from "@fest-lib/lure";
 import { ref, affected } from "@fest-lib/object";
 import { loadAsAdopted, removeAdopted } from "@fest-lib/dom";
 import DOMPurify from 'dompurify';
-import renderMathInElement from "katex/dist/contrib/auto-render.mjs";
 import { ensureStyleSheet, reinitializeRegistry } from "@fest-lib/icon";
 import type { BaseViewOptions, ShellContext, ViewLifecycle, ViewOptions, ViewId } from "views/types";
 import type { View } from "shells/types";
@@ -52,10 +51,6 @@ let markedParserPromise: Promise<(markdown: string) => Promise<string>> | null =
 const VIEWER_OUTLINE_SESSION_KEY = "rs-viewer-outline";
 
 
-const MATH_DELIMITER_PATTERN = /\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|(?<!\$)\$[^$\n]+\$|\\\([\s\S]*?\\\)/;
-
-/** KaTeX preprocess: keep markdown as text (not innerHTML) before auto-render — HTML parsing breaks `{`, `\\`, `<` in math. */
-const VIEWER_MAX_KATEX_PREPROCESS_CHARS = 350_000;
 /** Assigning multi‑MB strings to a <pre> synchronously freezes the tab; defer past this threshold. */
 const VIEWER_RAW_TEXTCONTENT_DEFER_CHARS = 96_000;
 /** Raw panel cap (content still fully in memory via ref; only DOM text is truncated). */
@@ -66,8 +61,6 @@ const VIEWER_CLIPBOARD_READ_TEXT_MAX_BYTES = 2 * 1024 * 1024;
 const VIEWER_INGEST_BASE64_PROBE_MAX = 480_000;
 /** `innerText` on a huge rendered DOM is extremely expensive. */
 const VIEWER_MAX_RENDERED_COPY_CHARS = 600_000;
-const FENCED_CODE_PATTERN = /(^|\n)(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\2(?=\n|$)/g;
-const INLINE_CODE_PATTERN = /`[^`\n]+`/g;
 const SANITIZE_OPTIONS = {
     /** KaTeX `output: "mathml"` emits `<math>` + SVG; default DOMPurify HTML-only config strips them → raw LaTeX in the UI. */
     USE_PROFILES: { html: true, mathMl: true, svg: true },
@@ -132,31 +125,6 @@ type ViewerMarkdownSettings = {
     extensions: MarkdownExtensionRule[];
 };
 
-function maskCodeSegments(markdown: string): { masked: string; restore: (value: string) => string } {
-    const maskedValues: string[] = [];
-    const tokenPrefix = "__MD_MASK_";
-    const tokenSuffix = "__";
-
-    const mask = (value: string): string => value.replace(FENCED_CODE_PATTERN, (segment) => {
-        const token = `${tokenPrefix}${maskedValues.length}${tokenSuffix}`;
-        maskedValues.push(segment);
-        return token;
-    });
-
-    const maskInline = (value: string): string => value.replace(INLINE_CODE_PATTERN, (segment) => {
-        const token = `${tokenPrefix}${maskedValues.length}${tokenSuffix}`;
-        maskedValues.push(segment);
-        return token;
-    });
-
-    const masked = maskInline(mask(markdown));
-
-    return {
-        masked,
-        restore: (value: string): string => value.replace(/__MD_MASK_(\d+)__/g, (_, index) => maskedValues[Number(index)] ?? "")
-    };
-}
-
 const getMarkedParser = async (): Promise<(markdown: string) => Promise<string>> => {
     if (markedParserPromise) return markedParserPromise;
     markedParserPromise = (async () => {
@@ -164,44 +132,14 @@ const getMarkedParser = async (): Promise<(markdown: string) => Promise<string>>
             import("marked"),
             import("marked-katex-extension"),
         ]);
-        // Configure marked with KaTeX extension for HTML output with proper delimiters
+        // WHY: no DOM preprocess — `textContent`→`innerHTML` escaped README `<h1>` on the
+        // second parse (ASSETS re-render). Math stays on marked-katex-extension.
         marked?.use?.(markedKatex({
             throwOnError: false,
             nonStandard: true,
             output: "mathml",
             strict: false,
-        }) as unknown as MarkedExtension,
-        {
-            hooks: {
-                preprocess: (markdown: string): string => {
-                    if (markdown.length > VIEWER_MAX_KATEX_PREPROCESS_CHARS) {
-                        return markdown;
-                    }
-                    if (!MATH_DELIMITER_PATTERN.test(markdown)) {
-                        return markdown;
-                    }
-
-                    const { masked, restore } = maskCodeSegments(markdown);
-                    const katexNode = document.createElement("div");
-                    // Text node only: innerHTML would parse `<`, `{`, `\\rightarrow`, etc. and corrupt LaTeX.
-                    katexNode.textContent = masked;
-                    renderMathInElement(katexNode, {
-                        throwOnError: false,
-                        nonStandard: true,
-                        output: "mathml",
-                        strict: false,
-                        delimiters: [
-                            { left: "$$", right: "$$", display: true },
-                            { left: "\\[", right: "\\]", display: true },
-                            { left: "$", right: "$", display: false },
-                            { left: "\\(", right: "\\)", display: false }
-                        ]
-                    });
-
-                    return restore(katexNode.innerHTML);
-                },
-            },
-        });
+        }) as unknown as MarkedExtension);
         return async (markdown: string) => {
             return await marked.parse(markdown ?? "");
         };
@@ -291,6 +229,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private isViewVisible = false;
     private isPointerInView = false;
     private sourceUrl: string | null = null;
+    /** Last `mountPickedDirectory` prefix (`/mounts/md-xxx/`) for ASSETS re-resolve. */
+    private boundMountRoot: string | null = null;
+    private boundDirectory: FileSystemDirectoryHandle | null = null;
     /** Share/launch sidecar images keyed by basename and relative name. */
     private sidecarAssets = new Map<string, File>();
     private assetObjectUrls: string[] = [];
@@ -498,7 +439,6 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
      * Update the displayed content
      */
     setContent(content: string, filename?: string, source?: string | null): void {
-        this.contentRef.value = content;
         if (filename) {
             this.options.filename = filename;
         }
@@ -506,7 +446,14 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             this.sourceUrl = this.normalizeSourceUrl(source);
             this.options.source = source || undefined;
         }
+        this.contentRef.value = content;
         this.syncToolbarDocumentTitle();
+    }
+
+    private repaintMarkdown(): void {
+        const renderTarget = this.queryViewerSlotted("[data-render-target]");
+        const rawTarget = this.queryViewerSlotted("[data-raw-target]") as HTMLPreElement | null;
+        if (renderTarget) this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
     }
 
     /**
@@ -1134,6 +1081,42 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
     }
 
+    /** `./assets/x` or same-origin `/assets/x` (page 404) → path under the bound folder. */
+    private markdownRelFromRef(value: string): string {
+        const raw = String(value || "").trim();
+        if (!raw || raw.startsWith("#") || raw.startsWith("blob:") || raw.startsWith("data:")) return "";
+        try {
+            const url = new URL(raw, globalThis.location.href);
+            if (url.origin === globalThis.location.origin) {
+                return url.pathname.replace(/^\/+/, "");
+            }
+            if (/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(raw) || raw.startsWith("//")) return "";
+        } catch { /* keep */ }
+        if (/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(raw) || raw.startsWith("//")) return "";
+        return raw.replace(/^\.\//, "").replace(/^\/+/, "");
+    }
+
+    private async loadBoundMediaFile(current: string, resolved: string): Promise<File | null> {
+        const rel = this.markdownRelFromRef(current) || this.markdownRelFromRef(resolved);
+        const sidecarHit = this.lookupSidecarFile(current, resolved, rel);
+        if (sidecarHit) return sidecarHit;
+        const fromDir = await resolveFileUnderDirectory(this.boundDirectory, rel);
+        if (fromDir) return fromDir;
+        const tries = new Set<string>();
+        if (resolved && isVirtualFsPath(resolved)) tries.add(resolved);
+        for (const candidate of relPathCandidates(rel)) {
+            if (this.boundMountRoot) tries.add(normalizePath(this.boundMountRoot, candidate));
+            if (this.sourceUrl && isVirtualFsPath(this.sourceUrl)) {
+                tries.add(normalizePath(getDir(this.sourceUrl), candidate));
+            }
+        }
+        for (const path of tries) {
+            const file = await provide(path).catch(() => null);
+            if (file) return file;
+        }
+        return this.lookupSidecarFile(current, resolved, rel);
+    }
+
     private resolveUrlAgainstSource(rawValue: string): string | null {
         const value = (rawValue || "").trim();
         if (!value) return null;
@@ -1161,41 +1144,50 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
 
         try {
-            return new URL(value, this.sourceUrl).toString();
+            const base = new URL(this.sourceUrl, globalThis.location.href);
+            // WHY: resolving `./assets/…` against the PWA origin writes
+            // `https://md.u2re.space/assets/…` (404) and blocks later bind.
+            if (base.origin === globalThis.location.origin) return value;
+            return new URL(value, base).toString();
         } catch {
             return value;
         }
     }
 
-    private async resolveRelativeResourceUrls(root: HTMLElement): Promise<void> {
-        this.revokeAssetUrls();
+    private async resolveRelativeResourceUrls(root: HTMLElement, opts?: { revoke?: boolean }): Promise<void> {
+        if (opts?.revoke !== false) this.revokeAssetUrls();
         const extPage = globalThis.location?.protocol === "chrome-extension:";
         const fileBacked = Boolean(this.sourceUrl?.startsWith("file:"));
 
         const apply = async (selector: string, attr: "src" | "href", mode: "link" | "media") => {
             const nodes = Array.from(root.querySelectorAll(selector)) as HTMLElement[];
             for (const node of nodes) {
-                const current = (node.getAttribute(attr) || "").trim();
-                if (!current) continue;
+                const attrValue = (node.getAttribute(attr) || "").trim();
+                const stored = (node.getAttribute("data-md-src") || "").trim();
+                const current = (stored && !stored.startsWith("blob:") ? stored : attrValue);
+                if (!current || current.startsWith("blob:")) continue;
+                if (!stored && !current.startsWith("blob:")) node.setAttribute("data-md-src", current);
                 const resolved = this.resolveUrlAgainstSource(current);
                 if (!resolved) {
-                    node.removeAttribute(attr);
                     continue;
                 }
-                if (isVirtualFsPath(resolved)) {
-                    if (mode === "media") {
-                        const file =
-                            (await provide(resolved).catch(() => null)) ||
-                            this.lookupSidecarFile(current, resolved);
-                        if (file) {
-                            const blobUrl = URL.createObjectURL(file);
-                            this.assetObjectUrls.push(blobUrl);
-                            node.setAttribute(attr, blobUrl);
-                        } else {
-                            node.removeAttribute(attr);
-                        }
+                if (mode === "media") {
+                    const file = await this.loadBoundMediaFile(current, resolved);
+                    if (file) {
+                        const blobUrl = URL.createObjectURL(file);
+                        this.assetObjectUrls.push(blobUrl);
+                        node.setAttribute(attr, blobUrl);
+                        if (attr === "src" && "src" in node) (node as HTMLImageElement).src = blobUrl;
                         continue;
                     }
+                    if (isVirtualFsPath(resolved)) continue;
+                    try {
+                        const abs = new URL(resolved, globalThis.location.href);
+                        if (abs.origin === globalThis.location.origin) continue;
+                    } catch { /* keep */ }
+                }
+                if (isVirtualFsPath(resolved)) {
+                    if (mode === "media") continue;
                     node.setAttribute(attr, resolved);
                     continue;
                 }
@@ -1225,7 +1217,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             }
         };
 
-        await apply("img[src]", "src", "media");
+        await apply("img", "src", "media");
         await apply("source[src]", "src", "media");
         await apply("video[src]", "src", "media");
         await apply("audio[src]", "src", "media");
@@ -1425,9 +1417,12 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         if (canPickDir && typeof pickFile === "function") {
             void (async () => {
                 try {
-                    const dir = await pickAssetDirectory({ mode: "readwrite", id: "markdown-assets" });
+                    const dir = await pickAssetDirectory({ mode: "read", id: "markdown-assets" });
                     if (!dir) return;
                     const root = mountPickedDirectory(dir, "md");
+                    this.boundMountRoot = root;
+                    this.boundDirectory = dir;
+                    await this.indexBoundDirectory(dir);
                     const [fileHandle] = await pickFile({
                         startIn: dir,
                         multiple: false,
@@ -1462,14 +1457,48 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         const dir = await pickAssetDirectory({ id: "markdown-assets", mode: "read" });
         if (!dir) return;
         const root = mountPickedDirectory(dir, "md");
+        this.boundMountRoot = root;
+        this.boundDirectory = dir;
+        await this.indexBoundDirectory(dir);
         const name = String(this.options.filename || "document.md").trim() || "document.md";
         const virtual = `${root}${name}`;
         this.sourceUrl = this.normalizeSourceUrl(virtual);
         this.options.source = virtual;
+        this.options.filename = name;
         this.watchVirtualSource(virtual);
-        const mdRoot = this.queryViewerSlotted(".view-viewer__md-root") as HTMLElement | null;
-        if (mdRoot) await this.resolveRelativeResourceUrls(mdRoot);
-        this.showMessage("Bound asset folder");
+        const bound = await this.rewireBoundMedia();
+        this.showMessage(bound ? `Bound asset folder (${bound} images)` : "Bound asset folder");
+    }
+
+    private async indexBoundDirectory(dir: FileSystemDirectoryHandle): Promise<void> {
+        const indexed = await indexDirectoryFiles(dir);
+        this.sidecarAssets.clear();
+        for (const { rel, file } of indexed) this.indexSidecarFile(file, rel);
+    }
+
+    private viewerMediaRoots(): HTMLElement[] {
+        const roots: HTMLElement[] = [];
+        const push = (el: HTMLElement | null | undefined) => {
+            if (el && !roots.includes(el)) roots.push(el);
+        };
+        const renderTarget = this.queryViewerSlotted("[data-render-target]");
+        push(renderTarget?.querySelector(":scope > .view-viewer__md-root") as HTMLElement | null);
+        push(this.queryViewerSlotted(".view-viewer__md-root"));
+        push(renderTarget);
+        push(this.element);
+        push(this.slotProjectingHost);
+        return roots;
+    }
+
+    private async rewireBoundMedia(): Promise<number> {
+        const roots = this.viewerMediaRoots();
+        const root = roots.find((el) => el.querySelector("img")) || roots[0];
+        if (!root) {
+            this.repaintMarkdown();
+            return 0;
+        }
+        await this.resolveRelativeResourceUrls(root);
+        return root.querySelectorAll('img[src^="blob:"]').length;
     }
 
     private rememberSidecarFiles(files: File[], primary?: File | null): void {
@@ -1483,27 +1512,36 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
     }
 
-    private indexSidecarFile(file: File): void {
+    private indexSidecarFile(file: File, relPath?: string): void {
         const name = file.name;
+        const droppedRel = String(
+            relPath || (file as File & { webkitRelativePath?: string }).webkitRelativePath || ""
+        ).replace(/^\/+/, "");
+        const keys = new Set<string>([name, name.toLowerCase()]);
         const base = name.split(/[\\/]/).pop() || name;
-        this.sidecarAssets.set(name, file);
-        this.sidecarAssets.set(name.toLowerCase(), file);
-        this.sidecarAssets.set(base, file);
-        this.sidecarAssets.set(base.toLowerCase(), file);
+        keys.add(base);
+        keys.add(base.toLowerCase());
+        if (droppedRel) {
+            keys.add(droppedRel);
+            keys.add(droppedRel.toLowerCase());
+            for (const candidate of relPathCandidates(droppedRel)) {
+                keys.add(candidate);
+                keys.add(candidate.toLowerCase());
+            }
+        }
+        for (const key of keys) this.sidecarAssets.set(key, file);
     }
 
     private lookupSidecarFile(...keys: string[]): File | null {
         for (const raw of keys) {
             const value = String(raw || "").trim();
             if (!value) continue;
-            const rel = value.split("#")[0].split("?")[0].replace(/^\.\//, "");
+            const rel = value.split("#")[0].split("?")[0].replace(/^\.\//, "").replace(/^\/+/, "");
             const base = rel.split(/[\\/]/).pop() || rel;
-            const hit =
-                this.sidecarAssets.get(rel) ||
-                this.sidecarAssets.get(rel.toLowerCase()) ||
-                this.sidecarAssets.get(base) ||
-                this.sidecarAssets.get(base.toLowerCase());
-            if (hit) return hit;
+            for (const candidate of [rel, rel.toLowerCase(), base, base.toLowerCase(), ...relPathCandidates(rel)]) {
+                const hit = this.sidecarAssets.get(candidate) || this.sidecarAssets.get(candidate.toLowerCase());
+                if (hit) return hit;
+            }
         }
         return null;
     }
@@ -1853,16 +1891,49 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
     private async ingestDroppedFiles(dt: DataTransfer | null | undefined): Promise<void> {
         if (!dt) return;
+        const items = Array.from(dt.items || []);
+        for (const item of items) {
+            const getHandle = (
+                item as DataTransferItem & {
+                    getAsFileSystemHandle?: () => Promise<FileSystemHandle | null>;
+                }
+            ).getAsFileSystemHandle;
+            if (typeof getHandle !== "function") continue;
+            try {
+                const handle = await getHandle.call(item);
+                if (handle && handle.kind === "directory") {
+                    const dir = handle as FileSystemDirectoryHandle;
+                    const root = mountPickedDirectory(dir, "md");
+                    this.boundMountRoot = root;
+                    this.boundDirectory = dir;
+                    await this.indexBoundDirectory(dir);
+                    const indexed = [...this.sidecarAssets.values()];
+                    const pick = this.pickMarkdownOrTextFile(indexed);
+                    if (!pick) {
+                        this.showMessage("No markdown in dropped folder");
+                        return;
+                    }
+                    const rel = [...this.sidecarAssets.entries()].find(([, file]) => file === pick)?.[0] || pick.name;
+                    this.setContent(await pick.text(), pick.name, `${root}${rel}`);
+                    void this.rewireBoundMedia();
+                    this.showMessage(`Opened ${pick.name}`);
+                    return;
+                }
+            } catch { /* try files */ }
+        }
         const fileList = dt.files;
         if (fileList && fileList.length > 0) {
-            const pick = this.pickMarkdownOrTextFile(Array.from(fileList));
+            const files = Array.from(fileList);
+            const pick = this.pickMarkdownOrTextFile(files);
             if (!pick) {
                 this.showMessage("Drop a .md or text file");
                 return;
             }
             try {
+                this.rememberSidecarFiles(files, pick);
                 const content = await pick.text();
                 this.setContent(content, pick.name, null);
+                if (this.sidecarAssets.size) void this.rewireBoundMedia();
                 this.showMessage(`Loaded ${pick.name}`);
             } catch {
                 this.showMessage("Failed to read dropped file");
