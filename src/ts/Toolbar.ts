@@ -17,6 +17,10 @@ export function createViewerToolbar(): HTMLElement {
                     <ui-icon class="view-viewer__toolbar-icon" icon="folder-open" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
                     <span>Open</span>
                 </button>
+                <button class="view-viewer__btn" data-action="bind-assets" type="button" title="Bind folder for images and other relative assets">
+                    <ui-icon class="view-viewer__toolbar-icon" icon="folder" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>Assets</span>
+                </button>
                 <button class="view-viewer__btn" data-action="toggle-raw" type="button" title="Toggle raw/rendered view">
                     <ui-icon class="view-viewer__toolbar-icon" icon="code" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
                     <span>Raw</span>

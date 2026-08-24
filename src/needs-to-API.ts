@@ -7,7 +7,7 @@
  *   `__content` wrapping `<slot name="raw">` + default `<slot>`); light DOM = `<pre slot="raw">` + prose `[data-render-target]`.
  */
 
-import { H, normalizeDataAsset, parseDataUrl, isBase64Like, decodeBase64ToBytes, openDirectory, provide, defineElement, getDir, normalizePath, isVirtualFsPath, registerDirectoryRoot, matchMappedRoot } from "@fest-lib/lure";
+import { H, normalizeDataAsset, parseDataUrl, isBase64Like, decodeBase64ToBytes, openDirectory, provide, defineElement, getDir, normalizePath, isVirtualFsPath, matchMappedRoot, pickAssetDirectory, mountPickedDirectory, observeFileSystemHandle, findEntryRelPath } from "@fest-lib/lure";
 import { ref, affected } from "@fest-lib/object";
 import { loadAsAdopted, removeAdopted } from "@fest-lib/dom";
 import DOMPurify from 'dompurify';
@@ -39,22 +39,12 @@ import "@fest-lib/icon";
 // @ts-ignore - SCSS import
 import style from "./index.scss?inline";
 
-const findEntryRelPath = async (
-    dir: FileSystemDirectoryHandle,
-    target: FileSystemFileHandle
-): Promise<string | null> => {
-    for await (const [name, handle] of dir.entries()) {
-        if (handle.kind === "file") {
-            try {
-                if (await handle.isSameEntry(target)) return name;
-            } catch { /* different backends */ }
-        } else if (handle.kind === "directory") {
-            const inner = await findEntryRelPath(handle, target);
-            if (inner) return `${name}/${inner}`;
-        }
-    }
-    return null;
-};
+const isIngressSourceToken = (value: string): boolean =>
+    value === "launch-queue" ||
+    value === "share-target" ||
+    value === "clipboard" ||
+    value === "pending";
+
 import type { MarkedExtension } from "marked";
 
 let markedParserPromise: Promise<(markdown: string) => Promise<string>> | null = null;
@@ -301,6 +291,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private isViewVisible = false;
     private isPointerInView = false;
     private sourceUrl: string | null = null;
+    /** Share/launch sidecar images keyed by basename and relative name. */
+    private sidecarAssets = new Map<string, File>();
     private assetObjectUrls: string[] = [];
     private sourceObserver: { disconnect?: () => void } | null = null;
     private customSheet: CSSStyleSheet | null = null;
@@ -608,6 +600,10 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                             <button class="view-viewer__btn" data-action="open" type="button" title="Open file">
                                 <ui-icon class="view-viewer__toolbar-icon" icon="folder-open" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
                                 <span>Open</span>
+                            </button>
+                            <button class="view-viewer__btn" data-action="bind-assets" type="button" title="Bind folder for images and other relative assets">
+                                <ui-icon class="view-viewer__toolbar-icon" icon="folder" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                                <span>Assets</span>
                             </button>
                             <button class="view-viewer__btn" data-action="toggle-raw" type="button" title="Toggle raw/rendered view">
                                 <ui-icon class="view-viewer__toolbar-icon" icon="code" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
@@ -945,9 +941,6 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.sourceObserver = null;
         const path = this.normalizeSourceUrl(source);
         if (!path || !isVirtualFsPath(path)) return;
-        const Ctor = (globalThis as { FileSystemObserver?: new (cb: Function) => { observe: Function; disconnect: Function } })
-            .FileSystemObserver;
-        if (typeof Ctor !== "function") return;
         void provide(path).then(async () => {
             const nav: any = navigator;
             const getDirHandle = nav?.storage?.getDirectory;
@@ -963,13 +956,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 return;
             }
             if (!handle) return;
-            try {
-                const observer = new Ctor(() => this.onRefresh());
-                void observer.observe(handle);
-                this.sourceObserver = observer;
-            } catch {
-                /* experimental FileSystemObserver */
-            }
+            this.sourceObserver = observeFileSystemHandle(handle, () => this.onRefresh());
         });
     }
 
@@ -1197,7 +1184,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 }
                 if (isVirtualFsPath(resolved)) {
                     if (mode === "media") {
-                        const file = await provide(resolved).catch(() => null);
+                        const file =
+                            (await provide(resolved).catch(() => null)) ||
+                            this.lookupSidecarFile(current, resolved);
                         if (file) {
                             const blobUrl = URL.createObjectURL(file);
                             this.assetObjectUrls.push(blobUrl);
@@ -1208,6 +1197,13 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                         continue;
                     }
                     node.setAttribute(attr, resolved);
+                    continue;
+                }
+                const sidecar = mode === "media" ? this.lookupSidecarFile(current, resolved) : null;
+                if (sidecar) {
+                    const blobUrl = URL.createObjectURL(sidecar);
+                    this.assetObjectUrls.push(blobUrl);
+                    node.setAttribute(attr, blobUrl);
                     continue;
                 }
                 // Extension viewer + file-backed source: do not inject file:// into the DOM.
@@ -1321,6 +1317,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 case "open":
                     this.handleOpen();
                     break;
+                case "bind-assets":
+                    void this.handleBindAssets();
+                    break;
                 case "paste":
                     void this.handlePasteFromToolbar();
                     break;
@@ -1421,14 +1420,14 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private handleOpen(): void {
-        const pickDir = (globalThis as { showDirectoryPicker?: (opts?: { mode?: string; id?: string }) => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker;
         const pickFile = (globalThis as { showOpenFilePicker?: (opts?: Record<string, unknown>) => Promise<FileSystemFileHandle[]> }).showOpenFilePicker;
-        if (typeof pickDir === "function" && typeof pickFile === "function") {
+        const canPickDir = typeof (globalThis as { showDirectoryPicker?: unknown }).showDirectoryPicker === "function";
+        if (canPickDir && typeof pickFile === "function") {
             void (async () => {
                 try {
-                    const dir = await pickDir({ mode: "readwrite", id: "markdown-assets" });
-                    const root = `/mounts/md-${Date.now().toString(36)}/`;
-                    registerDirectoryRoot(root, dir);
+                    const dir = await pickAssetDirectory({ mode: "readwrite", id: "markdown-assets" });
+                    if (!dir) return;
+                    const root = mountPickedDirectory(dir, "md");
                     const [fileHandle] = await pickFile({
                         startIn: dir,
                         multiple: false,
@@ -1440,6 +1439,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     const rel = (await findEntryRelPath(dir, fileHandle)) || fileHandle.name;
                     const virtual = `${root}${rel}`;
                     const file = await fileHandle.getFile();
+                    this.sidecarAssets.clear();
                     this.setContent(await file.text(), file.name, virtual);
                     this.showMessage(`Opened ${file.name}`);
                 } catch (error) {
@@ -1451,6 +1451,79 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             return;
         }
         this.handleOpenInputFallback();
+    }
+
+    /** Bind a sibling folder after Launch Queue / Share Target (no parent handle). */
+    private async handleBindAssets(): Promise<void> {
+        if (typeof (globalThis as { showDirectoryPicker?: unknown }).showDirectoryPicker !== "function") {
+            this.showMessage("Folder picker is not available in this browser");
+            return;
+        }
+        const dir = await pickAssetDirectory({ id: "markdown-assets", mode: "read" });
+        if (!dir) return;
+        const root = mountPickedDirectory(dir, "md");
+        const name = String(this.options.filename || "document.md").trim() || "document.md";
+        const virtual = `${root}${name}`;
+        this.sourceUrl = this.normalizeSourceUrl(virtual);
+        this.options.source = virtual;
+        this.watchVirtualSource(virtual);
+        const mdRoot = this.queryViewerSlotted(".view-viewer__md-root") as HTMLElement | null;
+        if (mdRoot) await this.resolveRelativeResourceUrls(mdRoot);
+        this.showMessage("Bound asset folder");
+    }
+
+    private rememberSidecarFiles(files: File[], primary?: File | null): void {
+        this.sidecarAssets.clear();
+        for (const file of files) {
+            if (!(file instanceof File)) continue;
+            if (primary && (file === primary || (file.name === primary.name && file.size === primary.size))) {
+                continue;
+            }
+            this.indexSidecarFile(file);
+        }
+    }
+
+    private indexSidecarFile(file: File): void {
+        const name = file.name;
+        const base = name.split(/[\\/]/).pop() || name;
+        this.sidecarAssets.set(name, file);
+        this.sidecarAssets.set(name.toLowerCase(), file);
+        this.sidecarAssets.set(base, file);
+        this.sidecarAssets.set(base.toLowerCase(), file);
+    }
+
+    private lookupSidecarFile(...keys: string[]): File | null {
+        for (const raw of keys) {
+            const value = String(raw || "").trim();
+            if (!value) continue;
+            const rel = value.split("#")[0].split("?")[0].replace(/^\.\//, "");
+            const base = rel.split(/[\\/]/).pop() || rel;
+            const hit =
+                this.sidecarAssets.get(rel) ||
+                this.sidecarAssets.get(rel.toLowerCase()) ||
+                this.sidecarAssets.get(base) ||
+                this.sidecarAssets.get(base.toLowerCase());
+            if (hit) return hit;
+        }
+        return null;
+    }
+
+    /** Prefer a virtual/file path; never treat the transfer enum as a document base. */
+    private pickDocumentSourcePath(...candidates: Array<string | undefined | null>): string | null {
+        for (const raw of candidates) {
+            if (typeof raw !== "string") continue;
+            const value = raw.trim();
+            if (!value || isIngressSourceToken(value)) continue;
+            if (
+                isVirtualFsPath(value) ||
+                /^https?:/i.test(value) ||
+                /^file:/i.test(value) ||
+                value.includes("/")
+            ) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private handleOpenInputFallback(): void {
@@ -2649,6 +2722,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 source?: string;
                 path?: string;
                 src?: string;
+                virtualPath?: string;
+                hint?: { source?: string; filename?: string };
                 file?: File;
                 files?: File[];
                 colorScheme?: unknown;
@@ -2734,6 +2809,21 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             }
         }
 
+        if (Array.isArray(payload?.files)) {
+            this.rememberSidecarFiles(
+                payload.files.filter((file): file is File => file instanceof File),
+                fileEarly
+            );
+        }
+
+        const transferSource = this.pickDocumentSourcePath(
+            payload?.virtualPath,
+            payload?.src,
+            payload?.path,
+            payload?.hint?.source,
+            payload?.source
+        );
+
         /** Launch-queue / share merges can retain stale inline text; prefer a text-like File when present. */
         const textLikeMergedEnvelopeFile =
             preferAuthoritativeTextFile && !!fileEarly && this.isTextLikeFile(fileEarly);
@@ -2751,15 +2841,13 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             try {
                 const text = await fileEarly.text();
                 if (this.viewIngressSupersededAfterAsync(meta)) return;
-                const sourcePath =
-                    payload?.source || payload?.src || payload?.path || fileEarly.name;
+                const sourcePath = transferSource;
                 this.ingestOpenedMarkdownBody(text || "", payload?.filename || fileEarly.name, sourcePath);
                 return;
             } catch (error) {
                 console.warn("[Viewer] Failed to read prioritized file payload, falling back to inline/url:", error);
                 if (preferAuthoritativeTextFile) {
-                    const sourcePath =
-                        payload?.source || payload?.src || payload?.path || fileEarly!.name;
+                    const sourcePath = transferSource;
                     this.setContent(
                         `> Failed to read transferred file:\n> ${fileEarly!.name}`,
                         payload?.filename || fileEarly!.name,
@@ -2772,13 +2860,16 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
         if (!textLikeMergedEnvelopeFile && (payload?.text || payload?.content)) {
             const content = payload.text || payload.content || "";
-            const source = payload.source || payload.src || payload.path;
+            const source = transferSource || this.pickDocumentSourcePath(payload.source, payload.src, payload.path);
             this.ingestOpenedMarkdownBody(content, payload.filename, source);
             return;
         }
 
         if (payload?.url) {
-            const source = payload.source || payload.src || payload.path || payload.url;
+            const source =
+                transferSource ||
+                this.pickDocumentSourcePath(payload.source, payload.src, payload.path, payload.url) ||
+                payload.url;
             const opened = await this.openMarkdownFromUrl(source, payload.filename);
             if (this.viewIngressSupersededAfterAsync(meta)) return;
             if (!opened) {
@@ -2807,7 +2898,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             try {
                 const text = await fileCandidate.text();
                 if (this.viewIngressSupersededAfterAsync(meta)) return;
-                const srcPath = payload?.source || payload?.src || payload?.path || fileCandidate.name;
+                const srcPath = transferSource;
                 this.ingestOpenedMarkdownBody(text || "", payload?.filename || fileCandidate.name, srcPath);
             } catch (error) {
                 console.warn("[Viewer] Failed to read markdown file payload:", error);
