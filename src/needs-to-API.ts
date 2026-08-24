@@ -7,7 +7,7 @@
  *   `__content` wrapping `<slot name="raw">` + default `<slot>`); light DOM = `<pre slot="raw">` + prose `[data-render-target]`.
  */
 
-import { H, normalizeDataAsset, parseDataUrl, isBase64Like, decodeBase64ToBytes, openDirectory, provide, defineElement, getDir, normalizePath, isVirtualFsPath, matchMappedRoot, pickAssetDirectory, mountPickedDirectory, observeFileSystemHandle, findEntryRelPath, resolveFileUnderDirectory, relPathCandidates, indexDirectoryFiles } from "@fest-lib/lure";
+import { H, normalizeDataAsset, parseDataUrl, isBase64Like, decodeBase64ToBytes, openDirectory, provide, defineElement, getDir, normalizePath, isVirtualFsPath, matchMappedRoot, pickAssetDirectory, mountPickedDirectory, observeFileSystemHandle, findEntryRelPath, relPathCandidates, provideBoundRelative, originalRelFromRef, isMarkdownRelativeRef } from "@fest-lib/lure";
 import { ref, affected } from "@fest-lib/object";
 import { loadAsAdopted, removeAdopted } from "@fest-lib/dom";
 import DOMPurify from 'dompurify';
@@ -829,8 +829,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     const mdRoot = document.createElement("div");
                     mdRoot.className = "view-viewer__md-root";
                     mdRoot.innerHTML = sanitized;
+                    this.captureOriginalRelRefs(mdRoot);
                     renderTarget.append(outlineNav, mdRoot);
-                    void this.resolveRelativeResourceUrls(mdRoot);
+                    if (this.boundMountRoot) void this.applyBoundProvideBlobs(mdRoot);
                     this.applyRenderedLinkBehavior(mdRoot);
                     this.watchVirtualSource(this.sourceUrl);
                     this.refreshDocumentOutline(outlineNav, mdRoot);
@@ -1081,40 +1082,63 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
     }
 
-    /** `./assets/x` or same-origin `/assets/x` (page 404) → path under the bound folder. */
-    private markdownRelFromRef(value: string): string {
-        const raw = String(value || "").trim();
-        if (!raw || raw.startsWith("#") || raw.startsWith("blob:") || raw.startsWith("data:")) return "";
-        try {
-            const url = new URL(raw, globalThis.location.href);
-            if (url.origin === globalThis.location.origin) {
-                return url.pathname.replace(/^\/+/, "");
+    /** Stamp `data-md-rel` from the markdown token; strip fetchable `src` so JXL/SW never hit the PWA origin. */
+    private captureOriginalRelRefs(root: HTMLElement): void {
+        const stamp = (node: Element, attr: "src" | "href", strip: boolean) => {
+            const raw = (node.getAttribute("data-md-rel") || node.getAttribute(attr) || "").trim();
+            const rel = originalRelFromRef(raw);
+            if (!rel) return;
+            node.setAttribute("data-md-rel", isMarkdownRelativeRef(raw) ? raw : rel);
+            if (!strip) return;
+            node.removeAttribute(attr);
+            if (attr === "src" && "src" in node) {
+                try { (node as HTMLImageElement).removeAttribute("src"); } catch { /* keep */ }
             }
-            if (/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(raw) || raw.startsWith("//")) return "";
-        } catch { /* keep */ }
-        if (/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(raw) || raw.startsWith("//")) return "";
-        return raw.replace(/^\.\//, "").replace(/^\/+/, "");
+        };
+        for (const node of root.querySelectorAll("img, source, video, audio, track")) {
+            stamp(node, "src", true);
+        }
+        for (const node of root.querySelectorAll("a[href]")) {
+            const href = (node.getAttribute("href") || "").trim();
+            const rel = originalRelFromRef(href) || (isMarkdownRelativeRef(href) ? href : "");
+            if (!rel || !this.isLikelyMarkdownUrl(rel)) continue;
+            stamp(node, "href", false);
+            node.setAttribute("href", "#");
+        }
     }
 
-    private async loadBoundMediaFile(current: string, resolved: string): Promise<File | null> {
-        const rel = this.markdownRelFromRef(current) || this.markdownRelFromRef(resolved);
-        const sidecarHit = this.lookupSidecarFile(current, resolved, rel);
-        if (sidecarHit) return sidecarHit;
-        const fromDir = await resolveFileUnderDirectory(this.boundDirectory, rel);
-        if (fromDir) return fromDir;
-        const tries = new Set<string>();
-        if (resolved && isVirtualFsPath(resolved)) tries.add(resolved);
-        for (const candidate of relPathCandidates(rel)) {
-            if (this.boundMountRoot) tries.add(normalizePath(this.boundMountRoot, candidate));
-            if (this.sourceUrl && isVirtualFsPath(this.sourceUrl)) {
-                tries.add(normalizePath(getDir(this.sourceUrl), candidate));
+    /** After bind: original relative → main-thread `provide()` → blob URL (no OPFS worker, no HTTP). */
+    private async applyBoundProvideBlobs(root: HTMLElement): Promise<number> {
+        if (!this.boundMountRoot) return 0;
+        this.revokeAssetUrls();
+        let count = 0;
+        for (const node of root.querySelectorAll<HTMLElement>("[data-md-rel]")) {
+            const rel = (node.getAttribute("data-md-rel") || "").trim();
+            if (!rel) continue;
+            const file = await provideBoundRelative(this.boundMountRoot, rel, this.sourceUrl);
+            if (!file) continue;
+            const blobUrl = URL.createObjectURL(file);
+            this.assetObjectUrls.push(blobUrl);
+            const virtual = normalizePath(
+                this.sourceUrl && isVirtualFsPath(this.sourceUrl) ? getDir(this.sourceUrl) : this.boundMountRoot,
+                relPathCandidates(rel)[0] || rel
+            );
+            if (node.tagName === "A") {
+                node.setAttribute("href", blobUrl);
+                node.setAttribute("data-md-virtual", virtual);
+            } else {
+                node.setAttribute("src", blobUrl);
+                if ("src" in node) (node as HTMLImageElement).src = blobUrl;
             }
+            count += 1;
         }
-        for (const path of tries) {
-            const file = await provide(path).catch(() => null);
-            if (file) return file;
-        }
-        return this.lookupSidecarFile(current, resolved, rel);
+        return count;
+    }
+
+    private async rewireMarkdownRefs(root: HTMLElement): Promise<number> {
+        this.captureOriginalRelRefs(root);
+        if (!this.boundMountRoot) return 0;
+        return this.applyBoundProvideBlobs(root);
     }
 
     private resolveUrlAgainstSource(rawValue: string): string | null {
@@ -1152,77 +1176,6 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         } catch {
             return value;
         }
-    }
-
-    private async resolveRelativeResourceUrls(root: HTMLElement, opts?: { revoke?: boolean }): Promise<void> {
-        if (opts?.revoke !== false) this.revokeAssetUrls();
-        const extPage = globalThis.location?.protocol === "chrome-extension:";
-        const fileBacked = Boolean(this.sourceUrl?.startsWith("file:"));
-
-        const apply = async (selector: string, attr: "src" | "href", mode: "link" | "media") => {
-            const nodes = Array.from(root.querySelectorAll(selector)) as HTMLElement[];
-            for (const node of nodes) {
-                const attrValue = (node.getAttribute(attr) || "").trim();
-                const stored = (node.getAttribute("data-md-src") || "").trim();
-                const current = (stored && !stored.startsWith("blob:") ? stored : attrValue);
-                if (!current || current.startsWith("blob:")) continue;
-                if (!stored && !current.startsWith("blob:")) node.setAttribute("data-md-src", current);
-                const resolved = this.resolveUrlAgainstSource(current);
-                if (!resolved) {
-                    continue;
-                }
-                if (mode === "media") {
-                    const file = await this.loadBoundMediaFile(current, resolved);
-                    if (file) {
-                        const blobUrl = URL.createObjectURL(file);
-                        this.assetObjectUrls.push(blobUrl);
-                        node.setAttribute(attr, blobUrl);
-                        if (attr === "src" && "src" in node) (node as HTMLImageElement).src = blobUrl;
-                        continue;
-                    }
-                    if (isVirtualFsPath(resolved)) continue;
-                    try {
-                        const abs = new URL(resolved, globalThis.location.href);
-                        if (abs.origin === globalThis.location.origin) continue;
-                    } catch { /* keep */ }
-                }
-                if (isVirtualFsPath(resolved)) {
-                    if (mode === "media") continue;
-                    node.setAttribute(attr, resolved);
-                    continue;
-                }
-                const sidecar = mode === "media" ? this.lookupSidecarFile(current, resolved) : null;
-                if (sidecar) {
-                    const blobUrl = URL.createObjectURL(sidecar);
-                    this.assetObjectUrls.push(blobUrl);
-                    node.setAttribute(attr, blobUrl);
-                    continue;
-                }
-                // Extension viewer + file-backed source: do not inject file:// into the DOM.
-                // Chromium blocks nested/opaque file loads; keep relative hrefs for link clicks.
-                if (extPage && fileBacked && /^file:/i.test(resolved)) {
-                    if (mode === "link") {
-                        const hadAbsoluteScheme =
-                            /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(current) || current.startsWith("//");
-                        if (!hadAbsoluteScheme) {
-                            continue;
-                        }
-                        node.removeAttribute(attr);
-                        continue;
-                    }
-                    node.removeAttribute(attr);
-                    continue;
-                }
-                if (resolved !== current) node.setAttribute(attr, resolved);
-            }
-        };
-
-        await apply("img", "src", "media");
-        await apply("source[src]", "src", "media");
-        await apply("video[src]", "src", "media");
-        await apply("audio[src]", "src", "media");
-        await apply("track[src]", "src", "media");
-        await apply("a[href]", "href", "link");
     }
 
     private isLikelyMarkdownUrl(value: string): boolean {
@@ -1281,11 +1234,33 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             this.showMessage(filename ? `Opened ${filename}` : "Opened markdown link");
             return true;
         }
+        if (/^blob:/i.test(normalizedSource) || /^blob:/i.test(source)) {
+            return this.openMarkdownBlob(source, filename);
+        }
         const markdown = await this.fetchMarkdownFromUrl(normalizedSource);
         if (markdown === null) return false;
         this.ingestOpenedMarkdownBody(markdown, filename, normalizedSource);
         this.showMessage(filename ? `Opened ${filename}` : "Opened markdown link");
         return true;
+    }
+
+    private async openMarkdownBlob(blobUrl: string, relOrName?: string): Promise<boolean> {
+        try {
+            const text = await (await fetch(blobUrl)).text();
+            if (!text) return false;
+            const name = (relOrName || "").split(/[\\/]/).pop() || "document.md";
+            const virtual = relOrName && this.boundMountRoot
+                ? normalizePath(
+                    this.sourceUrl && isVirtualFsPath(this.sourceUrl) ? getDir(this.sourceUrl) : this.boundMountRoot,
+                    relOrName
+                )
+                : this.sourceUrl;
+            this.ingestOpenedMarkdownBody(text, name, virtual);
+            this.showMessage(`Opened ${name}`);
+            return true;
+        } catch {
+            return false;
+        }
     }
 
     private setupEventHandlers(rawElement?: HTMLPreElement): void {
@@ -1390,8 +1365,23 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             if (!link) return;
 
             const href = (link.getAttribute("href") || "").trim();
-            if (!href || href.startsWith("#")) return;
+            const rel = (link.getAttribute("data-md-rel") || "").trim();
+            const virtual = (link.getAttribute("data-md-virtual") || "").trim();
             if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || (e as MouseEvent).button !== 0) return;
+            if (rel || href.startsWith("blob:")) {
+                e.preventDefault();
+                const path = virtual || (rel && this.boundMountRoot
+                    ? normalizePath(this.sourceUrl && isVirtualFsPath(this.sourceUrl) ? getDir(this.sourceUrl) : this.boundMountRoot, rel)
+                    : "");
+                const open = path
+                    ? this.openMarkdownFromUrl(path)
+                    : this.openMarkdownBlob(href, rel);
+                void open.then((ok) => {
+                    if (!ok) this.showMessage("Failed to open markdown link");
+                });
+                return;
+            }
+            if (!href || href.startsWith("#")) return;
 
             const resolved = this.resolveUrlAgainstSource(href);
             if (!resolved) return;
@@ -1422,7 +1412,6 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     const root = mountPickedDirectory(dir, "md");
                     this.boundMountRoot = root;
                     this.boundDirectory = dir;
-                    await this.indexBoundDirectory(dir);
                     const [fileHandle] = await pickFile({
                         startIn: dir,
                         multiple: false,
@@ -1434,7 +1423,6 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     const rel = (await findEntryRelPath(dir, fileHandle)) || fileHandle.name;
                     const virtual = `${root}${rel}`;
                     const file = await fileHandle.getFile();
-                    this.sidecarAssets.clear();
                     this.setContent(await file.text(), file.name, virtual);
                     this.showMessage(`Opened ${file.name}`);
                 } catch (error) {
@@ -1459,7 +1447,6 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         const root = mountPickedDirectory(dir, "md");
         this.boundMountRoot = root;
         this.boundDirectory = dir;
-        await this.indexBoundDirectory(dir);
         const name = String(this.options.filename || "document.md").trim() || "document.md";
         const virtual = `${root}${name}`;
         this.sourceUrl = this.normalizeSourceUrl(virtual);
@@ -1467,38 +1454,24 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.options.filename = name;
         this.watchVirtualSource(virtual);
         const bound = await this.rewireBoundMedia();
-        this.showMessage(bound ? `Bound asset folder (${bound} images)` : "Bound asset folder");
+        this.showMessage(bound ? `Bound folder (${bound} refs)` : "Bound asset folder");
     }
 
-    private async indexBoundDirectory(dir: FileSystemDirectoryHandle): Promise<void> {
-        const indexed = await indexDirectoryFiles(dir);
-        this.sidecarAssets.clear();
-        for (const { rel, file } of indexed) this.indexSidecarFile(file, rel);
-    }
-
-    private viewerMediaRoots(): HTMLElement[] {
-        const roots: HTMLElement[] = [];
-        const push = (el: HTMLElement | null | undefined) => {
-            if (el && !roots.includes(el)) roots.push(el);
-        };
+    private viewerMarkdownRoot(): HTMLElement | null {
         const renderTarget = this.queryViewerSlotted("[data-render-target]");
-        push(renderTarget?.querySelector(":scope > .view-viewer__md-root") as HTMLElement | null);
-        push(this.queryViewerSlotted(".view-viewer__md-root"));
-        push(renderTarget);
-        push(this.element);
-        push(this.slotProjectingHost);
-        return roots;
+        return (renderTarget?.querySelector(":scope > .view-viewer__md-root")
+            || this.queryViewerSlotted(".view-viewer__md-root")
+            || renderTarget
+            || this.element) as HTMLElement | null;
     }
 
     private async rewireBoundMedia(): Promise<number> {
-        const roots = this.viewerMediaRoots();
-        const root = roots.find((el) => el.querySelector("img")) || roots[0];
+        const root = this.viewerMarkdownRoot();
         if (!root) {
             this.repaintMarkdown();
             return 0;
         }
-        await this.resolveRelativeResourceUrls(root);
-        return root.querySelectorAll('img[src^="blob:"]').length;
+        return this.rewireMarkdownRefs(root);
     }
 
     private rememberSidecarFiles(files: File[], primary?: File | null): void {
@@ -1906,16 +1879,15 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     const root = mountPickedDirectory(dir, "md");
                     this.boundMountRoot = root;
                     this.boundDirectory = dir;
-                    await this.indexBoundDirectory(dir);
-                    const indexed = [...this.sidecarAssets.values()];
-                    const pick = this.pickMarkdownOrTextFile(indexed);
+                    const files = Array.from(dt.files || []);
+                    const pick = this.pickMarkdownOrTextFile(files);
                     if (!pick) {
-                        this.showMessage("No markdown in dropped folder");
+                        this.showMessage("Bound folder — open a .md");
                         return;
                     }
-                    const rel = [...this.sidecarAssets.entries()].find(([, file]) => file === pick)?.[0] || pick.name;
+                    const droppedRel = (pick as File & { webkitRelativePath?: string }).webkitRelativePath || pick.name;
+                    const rel = relPathCandidates(droppedRel).find((c) => c.endsWith(pick.name)) || pick.name;
                     this.setContent(await pick.text(), pick.name, `${root}${rel}`);
-                    void this.rewireBoundMedia();
                     this.showMessage(`Opened ${pick.name}`);
                     return;
                 }
@@ -1930,10 +1902,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 return;
             }
             try {
-                this.rememberSidecarFiles(files, pick);
                 const content = await pick.text();
                 this.setContent(content, pick.name, null);
-                if (this.sidecarAssets.size) void this.rewireBoundMedia();
                 this.showMessage(`Loaded ${pick.name}`);
             } catch {
                 this.showMessage("Failed to read dropped file");
