@@ -20,6 +20,7 @@ import { createViewConstructor } from "views/registry";
 import { ViewerChannelAction, ExplorerChannelAction } from "views/apis/channel-actions";
 import { loadSettings } from "com/config/Settings";
 import { sendViewProtocolMessage } from "com/core/UniformViewTransport";
+import { publicHrefForSku, shouldHandoffViewToSibling, stashSkuHandoff, takeSkuHandoff } from "com/config/ecosystem-skus";
 import {
     pickAuthoritativeTransferFiles,
     textIngressLooksCorrupt,
@@ -909,6 +910,15 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private applyRouteParams(params?: Record<string, unknown>): void {
+        const handed = takeSkuHandoff("viewer", "document");
+        if (handed?.content?.trim()) {
+            this.contentRef.value = handed.content;
+            if (handed.filename) this.options.filename = handed.filename;
+            if (handed.src) {
+                this.sourceUrl = this.normalizeSourceUrl(handed.src);
+                this.options.source = handed.src;
+            }
+        }
         if (!params) return;
         const detachKey = String(params.detachKey || "").trim();
         if (detachKey) {
@@ -1717,6 +1727,11 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
 
         const filename = this.options.filename || `viewer-${Date.now()}.md`;
+        if (shouldHandoffViewToSibling("workcenter")) {
+            stashSkuHandoff({ dest: "workcenter", content, filename });
+            globalThis.location.assign(publicHrefForSku("process"));
+            return;
+        }
         const payload = {
             text: content,
             content,
