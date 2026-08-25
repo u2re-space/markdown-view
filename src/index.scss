@@ -3582,10 +3582,16 @@
             }
 
             :is(html, body):has([data-shell="minimal"]) #app,
+            :is(html, body):has([data-shell="immersive"]) #app,
+            :is(html, body):has([data-shell="base"]) #app,
             :is(html, body):has(cw-shell-minimal) #app,
+            :is(html, body):has(cw-shell-immersive) #app,
             :is(html, body):has([data-shell="minimal"]) [data-app-layer-root],
+            :is(html, body):has([data-shell="immersive"]) [data-app-layer-root],
             :is(html, body):has(cw-shell-minimal) [data-app-layer-root],
-            cw-shell-minimal {
+            :is(html, body):has(cw-shell-immersive) [data-app-layer-root],
+            cw-shell-minimal,
+            cw-shell-immersive {
                 display: contents !important;
                 position: static !important;
                 inset: auto !important;
@@ -3600,7 +3606,8 @@
                 max-height: none !important;
             }
 
-            cw-shell-minimal {
+            cw-shell-minimal,
+            cw-shell-immersive {
                 display: block !important;
             }
 
