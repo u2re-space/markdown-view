@@ -300,7 +300,7 @@ $_h-sizes: (
             padding: 0;
             inline-size: 100%;
             block-size: max-content;
-            min-block-size: max(100%, 100cqb);
+            min-block-size: 0;
             max-block-size: none;
             overflow: visible;
             background-color: transparent;
@@ -1244,7 +1244,7 @@ $_h-sizes: (
             overflow: visible !important;
             block-size: max-content !important;
             max-block-size: none !important;
-            min-block-size: max(100%, 100cqb) !important;
+            min-block-size: 0 !important;
             inline-size: 100% !important;
             max-inline-size: 100% !important;
             zoom: 1 !important;

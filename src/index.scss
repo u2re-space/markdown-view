@@ -3549,14 +3549,59 @@
                 background: transparent !important;
                 background-color: transparent !important;
                 overflow: visible !important;
+                contain: none !important;
+                position: static !important;
+                inset: auto !important;
+                display: contents !important;
+                block-size: auto !important;
+                max-block-size: none !important;
+                min-block-size: 0 !important;
+                height: auto !important;
             }
 
             :is(html, body):has([data-shell="base"]),
             :is(html, body):has([data-shell="immersive"]),
-            :is(html, body):has([data-shell="minimal"]), :host {
+            :is(html, body):has([data-shell="minimal"]),
+            :is(html, body):has(cw-shell-minimal),
+            :host {
                 background: #fff !important;
                 color: #000 !important;
                 overflow: visible !important;
+                contain: none !important;
+                container-type: normal !important;
+                content-visibility: visible !important;
+                position: static !important;
+                inset: auto !important;
+                display: block !important;
+                block-size: auto !important;
+                max-block-size: none !important;
+                min-block-size: 0 !important;
+                height: auto !important;
+                min-height: 0 !important;
+                max-height: none !important;
+            }
+
+            :is(html, body):has([data-shell="minimal"]) #app,
+            :is(html, body):has(cw-shell-minimal) #app,
+            :is(html, body):has([data-shell="minimal"]) [data-app-layer-root],
+            :is(html, body):has(cw-shell-minimal) [data-app-layer-root],
+            cw-shell-minimal {
+                display: contents !important;
+                position: static !important;
+                inset: auto !important;
+                overflow: visible !important;
+                contain: none !important;
+                container-type: normal !important;
+                content-visibility: visible !important;
+                block-size: auto !important;
+                max-block-size: none !important;
+                min-block-size: 0 !important;
+                height: auto !important;
+                max-height: none !important;
+            }
+
+            cw-shell-minimal {
+                display: block !important;
             }
 
             /* Keep markdown web-component content printable across all shells.
