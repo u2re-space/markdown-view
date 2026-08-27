@@ -7,7 +7,7 @@
  *   `__content` wrapping `<slot name="raw">` + default `<slot>`); light DOM = `<pre slot="raw">` + prose `[data-render-target]`.
  */
 
-import { H, normalizeDataAsset, parseDataUrl, isBase64Like, decodeBase64ToBytes, openDirectory, provide, defineElement, getDir, normalizePath, isVirtualFsPath, matchMappedRoot, pickAssetDirectory, mountPickedDirectory, observeFileSystemHandle, findEntryRelPath, relPathCandidates, provideBoundRelative, originalRelFromRef, isMarkdownRelativeRef } from "@fest-lib/lure";
+import { H, normalizeDataAsset, parseDataUrl, isBase64Like, decodeBase64ToBytes, openDirectory, provide, defineElement, getDir, normalizePath, isVirtualFsPath, matchMappedRoot, pickAssetDirectory, mountPickedDirectory, observeFileSystemHandle, findEntryRelPath, relPathCandidates, provideBoundRelative, resolveFileUnderDirectory, indexDirectoryFiles, originalRelFromRef, isMarkdownRelativeRef } from "@fest-lib/lure";
 import { pickMarkdownFile, pickSidecarDirectoryFiles, saveMarkdownBlob } from "@fest-lib/lure/markdown-assets";
 import { ref, affected } from "@fest-lib/object";
 import { loadAsAdopted, removeAdopted } from "@fest-lib/dom";
@@ -239,6 +239,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private sidecarAssets = new Map<string, File>();
     private assetObjectUrls: string[] = [];
     private sourceObserver: { disconnect?: () => void } | null = null;
+    private boundFsChangeTimer = 0;
     private customSheet: CSSStyleSheet | null = null;
     private userStyleModules: { screenCss: string; printCss: string } = { screenCss: "", printCss: "" };
     private markdownSettings: ViewerMarkdownSettings = {
@@ -834,7 +835,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     mdRoot.innerHTML = sanitized;
                     this.captureOriginalRelRefs(mdRoot);
                     renderTarget.append(outlineNav, mdRoot);
-                    if (this.boundMountRoot) void this.applyBoundProvideBlobs(mdRoot);
+                    if (this.hasBoundAssets()) void this.applyBoundProvideBlobs(mdRoot);
                     this.applyRenderedLinkBehavior(mdRoot);
                     this.watchVirtualSource(this.sourceUrl);
                     this.refreshDocumentOutline(outlineNav, mdRoot);
@@ -887,28 +888,53 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.assetObjectUrls = [];
     }
 
+    private hasBoundAssets(): boolean {
+        return Boolean(this.boundMountRoot || this.boundDirectory || this.sidecarAssets.size);
+    }
+
     private watchVirtualSource(source?: string | null): void {
         this.sourceObserver?.disconnect?.();
         this.sourceObserver = null;
+        const attach = (handle: FileSystemHandle | null | undefined) => {
+            if (!handle) return;
+            this.sourceObserver = observeFileSystemHandle(handle, () => this.scheduleBoundFsRewire());
+        };
+        // WHY: `provide(/mounts/…/document.md)` is often missing when the picker was `assets/`.
+        if (this.boundDirectory) {
+            attach(this.boundDirectory);
+            return;
+        }
         const path = this.normalizeSourceUrl(source);
         if (!path || !isVirtualFsPath(path)) return;
-        void provide(path).then(async () => {
-            const nav: any = navigator;
-            const getDirHandle = nav?.storage?.getDirectory;
-            let handle: FileSystemDirectoryHandle | null = null;
+        const mapped = matchMappedRoot(getDir(path));
+        if (!mapped || mapped.root === "/" || mapped.root === "/user/" || mapped.root === "/assets/") return;
+        void mapped.resolver().then((resolved) => {
+            if (resolved instanceof FileSystemDirectoryHandle) attach(resolved);
+        }).catch(() => {});
+    }
+
+    private scheduleBoundFsRewire(): void {
+        if (this.boundFsChangeTimer) clearTimeout(this.boundFsChangeTimer);
+        this.boundFsChangeTimer = globalThis.setTimeout(() => {
+            this.boundFsChangeTimer = 0;
+            void this.onBoundFsChange();
+        }, 50) as unknown as number;
+    }
+
+    private async onBoundFsChange(): Promise<void> {
+        if (this.boundDirectory) {
             try {
-                const mapped = matchMappedRoot(getDir(path));
-                const resolved = mapped ? await mapped.resolver() : null;
-                handle = resolved instanceof FileSystemDirectoryHandle ? resolved : null;
-                if (!handle && typeof getDirHandle === "function" && path.startsWith("/user/")) {
-                    handle = await getDirHandle.call(nav.storage);
-                }
-            } catch {
-                return;
-            }
-            if (!handle) return;
-            this.sourceObserver = observeFileSystemHandle(handle, () => this.onRefresh());
-        });
+                const indexed = await indexDirectoryFiles(this.boundDirectory);
+                this.rememberSidecarFiles(indexed.map((row) => {
+                    try {
+                        Object.defineProperty(row.file, "webkitRelativePath", { value: row.rel });
+                    } catch { /* immutable File */ }
+                    return row.file;
+                }));
+            } catch { /* keep last index */ }
+        }
+        const bound = await this.rewireBoundMedia();
+        if (!bound) this.onRefresh();
     }
 
     private applyRouteParams(params?: Record<string, unknown>): void {
@@ -1119,15 +1145,27 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
     }
 
-    /** After bind: original relative → main-thread `provide()` → blob URL (no OPFS worker, no HTTP). */
+    /** Sidecar map / FSA handle first — `provide(/mounts/…)` can miss if OPFS `mappedRoots` is a second module copy. */
+    private async resolveBoundAssetFile(rel: string): Promise<File | null> {
+        const sidecar = this.lookupSidecarFile(rel, originalRelFromRef(rel));
+        if (sidecar) return sidecar;
+        if (this.boundDirectory) {
+            const fromDir = await resolveFileUnderDirectory(this.boundDirectory, rel).catch(() => null);
+            if (fromDir) return fromDir;
+        }
+        if (!this.boundMountRoot) return null;
+        return provideBoundRelative(this.boundMountRoot, rel, this.sourceUrl);
+    }
+
+    /** After bind: original relative → File (sidecar / FSA / provide) → blob URL. */
     private async applyBoundProvideBlobs(root: HTMLElement): Promise<number> {
-        if (!this.boundMountRoot) return 0;
+        if (!this.hasBoundAssets()) return 0;
         this.revokeAssetUrls();
         let count = 0;
         for (const node of root.querySelectorAll<HTMLElement>("[data-md-rel]")) {
             const rel = (node.getAttribute("data-md-rel") || "").trim();
             if (!rel) continue;
-            const file = await provideBoundRelative(this.boundMountRoot, rel, this.sourceUrl);
+            const file = await this.resolveBoundAssetFile(rel);
             if (!file) continue;
             const blobUrl = URL.createObjectURL(file);
             this.assetObjectUrls.push(blobUrl);
@@ -1149,7 +1187,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
     private async rewireMarkdownRefs(root: HTMLElement): Promise<number> {
         this.captureOriginalRelRefs(root);
-        if (!this.boundMountRoot) return 0;
+        if (!this.hasBoundAssets()) return 0;
         return this.applyBoundProvideBlobs(root);
     }
 
@@ -2152,6 +2190,35 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
     }
 
+    private looksLikeBinaryPreviewFile(file: File): boolean {
+        const mime = (file.type || "").toLowerCase();
+        const name = (file.name || "").toLowerCase();
+        if (mime.startsWith("image/") || mime === "application/pdf") return true;
+        return /\.(png|jpe?g|gif|webp|bmp|svg|avif|pdf)$/i.test(name);
+    }
+
+    /** Image / PDF / downloadable blob — not markdown ingest. */
+    private showSharedBinaryPreview(file: File): void {
+        const target = this.queryViewerSlotted("[data-render-target]");
+        if (!target) {
+            this.showMessage(file.name || "Opened file");
+            return;
+        }
+        const url = URL.createObjectURL(file);
+        this.assetObjectUrls.push(url);
+        const mime = (file.type || "").toLowerCase();
+        const name = file.name || "file";
+        const safeName = name.replace(/[<>&"]/g, "");
+        if (mime.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(name)) {
+            target.innerHTML = `<img class="view-viewer__share-preview" src="${url}" alt="${safeName}" style="max-width:100%;height:auto" />`;
+        } else if (mime === "application/pdf" || /\.pdf$/i.test(name)) {
+            target.innerHTML = `<iframe class="view-viewer__share-preview" src="${url}" title="${safeName}" style="width:100%;min-height:70vh;border:0"></iframe>`;
+        } else {
+            target.innerHTML = `<p>Opened ${safeName} (${file.size} bytes)</p><a href="${url}" download="${safeName}">Download</a>`;
+        }
+        this.showMessage(name);
+    }
+
     private isTextLikeFile(file: File): boolean {
         const name = (file.name || "").toLowerCase();
         const type = (file.type || "").toLowerCase();
@@ -2677,6 +2744,10 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.isViewVisible = false;
         this.isPointerInView = false;
         this.revokeAssetUrls();
+        if (this.boundFsChangeTimer) {
+            clearTimeout(this.boundFsChangeTimer);
+            this.boundFsChangeTimer = 0;
+        }
         this.sourceObserver?.disconnect?.();
         this.sourceObserver = null;
         console.log("[Viewer] Hidden");
@@ -2859,6 +2930,11 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 console.warn("[Viewer] Ingress file rejected:", vr.reason, fileEarly.name);
                 fileEarly = null;
             }
+        }
+
+        if (fileEarly && this.looksLikeBinaryPreviewFile(fileEarly)) {
+            this.showSharedBinaryPreview(fileEarly);
+            return;
         }
 
         if (Array.isArray(payload?.files)) {
