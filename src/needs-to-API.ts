@@ -8,6 +8,7 @@
  */
 
 import { H, normalizeDataAsset, parseDataUrl, isBase64Like, decodeBase64ToBytes, openDirectory, provide, defineElement, getDir, normalizePath, isVirtualFsPath, matchMappedRoot, pickAssetDirectory, mountPickedDirectory, observeFileSystemHandle, findEntryRelPath, relPathCandidates, provideBoundRelative, originalRelFromRef, isMarkdownRelativeRef } from "@fest-lib/lure";
+import { pickMarkdownFile, pickSidecarDirectoryFiles, saveMarkdownBlob } from "@fest-lib/lure/markdown-assets";
 import { ref, affected } from "@fest-lib/object";
 import { loadAsAdopted, removeAdopted } from "@fest-lib/dom";
 import DOMPurify from 'dompurify';
@@ -225,6 +226,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private stateManager = createViewState<ViewerState>(STORAGE_KEY);
     private _sheet: CSSStyleSheet | null = null;
     private pasteController: AbortController | null = null;
+    private documentOpenListener: ((ev: Event) => void) | null = null;
     /** Whole-page drag/drop when the viewer is standalone (captures misses on shell padding). */
     private windowDnDController: AbortController | null = null;
     private isViewVisible = false;
@@ -1412,59 +1414,68 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private handleOpen(): void {
-        const pickFile = (globalThis as { showOpenFilePicker?: (opts?: Record<string, unknown>) => Promise<FileSystemFileHandle[]> }).showOpenFilePicker;
-        const canPickDir = typeof (globalThis as { showDirectoryPicker?: unknown }).showDirectoryPicker === "function";
-        if (canPickDir && typeof pickFile === "function") {
-            void (async () => {
+        void (async () => {
+            const canPickDir = typeof (globalThis as { showDirectoryPicker?: unknown }).showDirectoryPicker === "function";
+            const pickFile = (globalThis as { showOpenFilePicker?: (opts?: Record<string, unknown>) => Promise<FileSystemFileHandle[]> }).showOpenFilePicker;
+            if (canPickDir && typeof pickFile === "function") {
                 try {
                     const dir = await pickAssetDirectory({ mode: "read", id: "markdown-assets" });
-                    if (!dir) return;
-                    const root = mountPickedDirectory(dir, "md");
-                    this.boundMountRoot = root;
-                    this.boundDirectory = dir;
-                    const [fileHandle] = await pickFile({
-                        startIn: dir,
-                        multiple: false,
-                        types: [{
-                            description: "Markdown",
-                            accept: { "text/markdown": [".md", ".markdown", ".mdown", ".mkd"], "text/plain": [".txt"] }
-                        }]
-                    });
-                    const rel = (await findEntryRelPath(dir, fileHandle)) || fileHandle.name;
-                    const virtual = `${root}${rel}`;
-                    const file = await fileHandle.getFile();
-                    this.setContent(await file.text(), file.name, virtual);
-                    this.showMessage(`Opened ${file.name}`);
+                    if (dir) {
+                        const root = mountPickedDirectory(dir, "md");
+                        this.boundMountRoot = root;
+                        this.boundDirectory = dir;
+                        const [fileHandle] = await pickFile({
+                            startIn: dir,
+                            multiple: false,
+                            types: [{
+                                description: "Markdown",
+                                accept: { "text/markdown": [".md", ".markdown", ".mdown", ".mkd"], "text/plain": [".txt"] }
+                            }]
+                        });
+                        const rel = (await findEntryRelPath(dir, fileHandle)) || fileHandle.name;
+                        const virtual = `${root}${rel}`;
+                        const file = await fileHandle.getFile();
+                        this.setContent(await file.text(), file.name, virtual);
+                        this.showMessage(`Opened ${file.name}`);
+                        return;
+                    }
                 } catch (error) {
                     if ((error as DOMException)?.name === "AbortError") return;
                     console.warn("[ViewerView] Directory picker open failed, falling back:", error);
-                    this.handleOpenInputFallback();
                 }
-            })();
-            return;
-        }
-        this.handleOpenInputFallback();
+            }
+            const picked = await pickMarkdownFile();
+            if (!picked?.file) return;
+            if (picked.sidecars.length) this.rememberSidecarFiles(picked.sidecars, picked.file);
+            this.setContent(await picked.file.text(), picked.file.name, picked.virtualPath || null);
+            this.showMessage(`Opened ${picked.file.name}`);
+        })();
     }
 
     /** Bind a sibling folder after Launch Queue / Share Target (no parent handle). */
     private async handleBindAssets(): Promise<void> {
-        if (typeof (globalThis as { showDirectoryPicker?: unknown }).showDirectoryPicker !== "function") {
-            this.showMessage("Folder picker is not available in this browser");
+        const picked = await pickSidecarDirectoryFiles();
+        if (picked.directory && picked.root) {
+            this.boundMountRoot = picked.root;
+            this.boundDirectory = picked.directory;
+            const name = String(this.options.filename || "document.md").trim() || "document.md";
+            const virtual = `${picked.root}${name}`;
+            this.sourceUrl = this.normalizeSourceUrl(virtual);
+            this.options.source = virtual;
+            this.options.filename = name;
+            this.watchVirtualSource(virtual);
+            if (picked.files.length) this.rememberSidecarFiles(picked.files);
+            const bound = await this.rewireBoundMedia();
+            this.showMessage(bound ? `Bound folder (${bound} refs)` : "Bound asset folder");
             return;
         }
-        const dir = await pickAssetDirectory({ id: "markdown-assets", mode: "read" });
-        if (!dir) return;
-        const root = mountPickedDirectory(dir, "md");
-        this.boundMountRoot = root;
-        this.boundDirectory = dir;
-        const name = String(this.options.filename || "document.md").trim() || "document.md";
-        const virtual = `${root}${name}`;
-        this.sourceUrl = this.normalizeSourceUrl(virtual);
-        this.options.source = virtual;
-        this.options.filename = name;
-        this.watchVirtualSource(virtual);
+        if (!picked.files.length) {
+            this.showMessage("Folder picker cancelled");
+            return;
+        }
+        this.rememberSidecarFiles(picked.files);
         const bound = await this.rewireBoundMedia();
-        this.showMessage(bound ? `Bound folder (${bound} refs)` : "Bound asset folder");
+        this.showMessage(bound ? `Bound ${picked.files.length} files (${bound} refs)` : `Bound ${picked.files.length} files`);
     }
 
     private viewerMarkdownRoot(): HTMLElement | null {
@@ -1622,43 +1633,15 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private handleDownload(): void {
         const content = this.contentRef.value;
         const filename = this.options.filename || `document-${Date.now()}.md`;
-
-        const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
-        const url = URL.createObjectURL(blob);
-
-        let promised: any = null; // @ts-ignore
-        if (typeof showSaveFilePicker !== "undefined") { // @ts-ignore
-            promised = showSaveFilePicker({
-                suggestedName: filename,
-                types: [{
-                    description: "Markdown files",
-                    accept: { "text/markdown": [".md", ".markdown"] }
-                }] //@ts-ignore
-            })?.then?.(async (fileHandle: FileHandle) => {
-                if (fileHandle) {
-                    const writable = await fileHandle.createWritable();
-                    await writable.write(content);
-                    await writable.close();
-                    this.showMessage(`Downloaded ${filename}`);
-                    this.options.onDownload?.(content, filename);
-                } else {
-                    this.showMessage("Failed to save file");
-                }
-                return fileHandle;
-            })?.catch?.(() => {
+        void saveMarkdownBlob(content, filename).then((result) => {
+            if (result === "cancelled") return;
+            if (result === "failed") {
                 this.showMessage("Failed to save file");
-                return null;
-            });
-        } else {
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = filename;
-            a.click();
-            setTimeout(() => URL.revokeObjectURL(url), 250);
-
-            this.showMessage(`Downloaded ${filename}`);
+                return;
+            }
+            this.showMessage(result === "shared" ? `Shared ${filename}` : `Saved ${filename}`);
             this.options.onDownload?.(content, filename);
-        }
+        });
     }
 
     private async handleExportDocx(): Promise<void> {
@@ -2638,6 +2621,15 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
     private onMount(): void {
         console.log("[Viewer] Mounted");
+        if (!this.documentOpenListener) {
+            this.documentOpenListener = (ev: Event): void => {
+                const detail = (ev as CustomEvent<{ content?: string; filename?: string; src?: string }>).detail;
+                const text = String(detail?.content || "");
+                if (!text.trim()) return;
+                this.setContent(text, detail?.filename, detail?.src || null);
+            };
+            window.addEventListener("cwsp:document-open", this.documentOpenListener);
+        }
         ensureViewerIconRuntime();
         this._sheet ??= loadAsAdopted(style) as CSSStyleSheet;
         this.applyCustomStyles();
@@ -2655,6 +2647,10 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.isPointerInView = false;
         this.pasteController?.abort();
         this.pasteController = null;
+        if (this.documentOpenListener) {
+            window.removeEventListener("cwsp:document-open", this.documentOpenListener);
+            this.documentOpenListener = null;
+        }
         this.windowDnDController?.abort();
         this.windowDnDController = null;
         if (this.customSheet) {
