@@ -23,6 +23,14 @@ import { loadSettings } from "com/config/Settings";
 import { sendViewProtocolMessage } from "com/core/UniformViewTransport";
 import { publicHrefForSku, shouldHandoffViewToSibling, stashSkuHandoff, takeSkuHandoff } from "com/config/ecosystem-skus";
 import {
+    classifyOpenKind,
+    looksLikePreviewableBinary,
+    peekOpenPolicy,
+    rememberOpenPolicyFromSettings,
+    resolveOpenPolicy,
+    type OpenChannel
+} from "com/config/open-policy";
+import {
     pickAuthoritativeTransferFiles,
     textIngressLooksCorrupt,
     validateReadableFileForIngress,
@@ -320,7 +328,6 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.options = options;
         this.shellContext = options.shellContext;
         this.sourceUrl = this.normalizeSourceUrl(options.source);
-        this.applyRouteParams(options.params);
         this.markdownSettingsPromise = this.loadMarkdownSettings();
         try {
             this.outlineVisible = globalThis.sessionStorage?.getItem(VIEWER_OUTLINE_SESSION_KEY) === "1";
@@ -330,9 +337,10 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
         this.syncViewerColorSchemeFromOptions();
 
-        // Load initial content
+        /* WHY: applyRouteParams (share / SKU handoff) must win over the last saved document. */
         const savedState = this.stateManager.load();
         this.contentRef.value = options.initialContent || savedState?.content || DEFAULT_CONTENT;
+        this.applyRouteParams(options.params);
         if (!options.initialContent) {
             const fromParams = (options.params?.content || "").trim();
             if (fromParams) {
@@ -431,6 +439,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.subscribeContentRefToCurrentTargets(renderTarget, rawTarget);
 
         this.refreshDocumentTheme();
+        void this.pullCapacitorPendingOpen();
     }
 
     getToolbar(): HTMLElement | null {
@@ -1041,9 +1050,10 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         } else if (sourceParam && isVirtualFsPath(String(sourceParam))) {
             void provide(String(sourceParam)).then(async (file) => {
                 if (!file) return;
-                const text = await file.text().catch(() => "");
-                if (!text) return;
-                this.ingestOpenedMarkdownBody(text, filenameParam ? String(filenameParam) : file.name, String(sourceParam));
+                await this.ingestOpenedFile(file, {
+                    virtualPath: String(sourceParam),
+                    filename: filenameParam ? String(filenameParam) : file.name
+                });
             });
         }
         if (this.element) {
@@ -1278,11 +1288,13 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         if (!normalizedSource) return false;
         if (isVirtualFsPath(normalizedSource)) {
             const file = await provide(normalizedSource).catch(() => null);
-            const markdown = file ? await file.text().catch(() => null) : null;
-            if (!markdown) return false;
-            this.ingestOpenedMarkdownBody(markdown, filename || file?.name, normalizedSource);
-            this.showMessage(filename ? `Opened ${filename}` : "Opened markdown link");
-            return true;
+            if (!file) return false;
+            const ok = await this.ingestOpenedFile(file, {
+                virtualPath: normalizedSource,
+                filename: filename || file.name
+            });
+            if (ok) this.showMessage(filename ? `Opened ${filename}` : "Opened markdown link");
+            return ok;
         }
         if (/^blob:/i.test(normalizedSource) || /^blob:/i.test(source)) {
             return this.openMarkdownBlob(source, filename);
@@ -1466,15 +1478,20 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                             startIn: dir,
                             multiple: false,
                             types: [{
-                                description: "Markdown",
-                                accept: { "text/markdown": [".md", ".markdown", ".mdown", ".mkd"], "text/plain": [".txt"] }
+                                description: "Documents and images",
+                                accept: {
+                                    "text/markdown": [".md", ".markdown", ".mdown", ".mkd"],
+                                    "text/plain": [".txt"],
+                                    "image/*": [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg", ".avif"],
+                                    "application/pdf": [".pdf"]
+                                }
                             }]
                         });
                         const rel = (await findEntryRelPath(dir, fileHandle)) || fileHandle.name;
                         const virtual = `${root}${rel}`;
                         const file = await fileHandle.getFile();
-                        this.setContent(await file.text(), file.name, virtual);
-                        this.showMessage(`Opened ${file.name}`);
+                        const ok = await this.ingestOpenedFile(file, { virtualPath: virtual, filename: file.name });
+                        if (ok) this.showMessage(`Opened ${file.name}`);
                         return;
                     }
                 } catch (error) {
@@ -1485,8 +1502,11 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             const picked = await pickMarkdownFile();
             if (!picked?.file) return;
             if (picked.sidecars.length) this.rememberSidecarFiles(picked.sidecars, picked.file);
-            this.setContent(await picked.file.text(), picked.file.name, picked.virtualPath || null);
-            this.showMessage(`Opened ${picked.file.name}`);
+            const ok = await this.ingestOpenedFile(picked.file, {
+                virtualPath: picked.virtualPath || null,
+                filename: picked.file.name
+            });
+            if (ok) this.showMessage(`Opened ${picked.file.name}`);
         })();
     }
 
@@ -1599,14 +1619,13 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private handleOpenInputFallback(): void {
         const input = document.createElement("input");
         input.type = "file";
-        input.accept = ".md,.markdown,.mdown,.mkd,.mkdn,.mdtxt,.mdtext,.txt,text/markdown,text/plain,text/md";
+        input.accept = ".md,.markdown,.mdown,.mkd,.mkdn,.mdtxt,.mdtext,.txt,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg,.avif,.pdf,text/markdown,text/plain,text/md,image/*,application/pdf";
         input.onchange = async () => {
             const file = input.files?.[0];
             if (file) {
                 try {
-                    const content = await file.text();
-                    this.setContent(content, file.name, null);
-                    this.showMessage(`Opened ${file.name}`);
+                    const ok = await this.ingestOpenedFile(file, { filename: file.name });
+                    if (ok) this.showMessage(`Opened ${file.name}`);
                 } catch (error) {
                     console.error("[ViewerView] Failed to read file:", error);
                     this.showMessage("Failed to read file");
@@ -1916,15 +1935,15 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     this.boundMountRoot = root;
                     this.boundDirectory = dir;
                     const files = Array.from(dt.files || []);
-                    const pick = this.pickMarkdownOrTextFile(files);
+                    const pick = this.pickMarkdownOrTextFile(files) || files.find((f) => this.looksLikeBinaryPreviewFile(f));
                     if (!pick) {
-                        this.showMessage("Bound folder — open a .md");
+                        this.showMessage("Bound folder — open a .md or image");
                         return;
                     }
                     const droppedRel = (pick as File & { webkitRelativePath?: string }).webkitRelativePath || pick.name;
                     const rel = relPathCandidates(droppedRel).find((c) => c.endsWith(pick.name)) || pick.name;
-                    this.setContent(await pick.text(), pick.name, `${root}${rel}`);
-                    this.showMessage(`Opened ${pick.name}`);
+                    const ok = await this.ingestOpenedFile(pick, { virtualPath: `${root}${rel}`, filename: pick.name });
+                    if (ok) this.showMessage(`Opened ${pick.name}`);
                     return;
                 }
             } catch { /* try files */ }
@@ -1932,15 +1951,14 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         const fileList = dt.files;
         if (fileList && fileList.length > 0) {
             const files = Array.from(fileList);
-            const pick = this.pickMarkdownOrTextFile(files);
+            const pick = this.pickMarkdownOrTextFile(files) || files.find((f) => this.looksLikeBinaryPreviewFile(f));
             if (!pick) {
-                this.showMessage("Drop a .md or text file");
+                this.showMessage("Drop a .md, text, or image file");
                 return;
             }
             try {
-                const content = await pick.text();
-                this.setContent(content, pick.name, null);
-                this.showMessage(`Loaded ${pick.name}`);
+                const ok = await this.ingestOpenedFile(pick, { filename: pick.name });
+                if (ok) this.showMessage(`Loaded ${pick.name}`);
             } catch {
                 this.showMessage("Failed to read dropped file");
             }
@@ -2140,15 +2158,12 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
     private async ingestPastedPayload(files: File[], textPlain: string | undefined): Promise<void> {
         if (files.length > 0) {
-            const textFile = files.find((file) => this.isTextLikeFile(file)) || files[0];
+            const textFile = files.find((file) => this.isTextLikeFile(file));
+            const binaryFile = files.find((file) => this.looksLikeBinaryPreviewFile(file));
+            const pick = textFile || binaryFile || files[0];
             try {
-                if (!this.isTextLikeFile(textFile)) {
-                    this.showMessage(`Unsupported file type for viewer: ${textFile.name || textFile.type || "binary file"}`);
-                    return;
-                }
-                const content = await textFile.text();
-                this.setContent(content, textFile.name);
-                this.showMessage(`Opened ${textFile.name || "pasted document"}`);
+                const ok = await this.ingestOpenedFile(pick, { filename: pick.name });
+                if (ok) this.showMessage(`Opened ${pick.name || "pasted document"}`);
                 return;
             } catch (error) {
                 console.error("[ViewerView] Failed to read pasted file:", error);
@@ -2172,6 +2187,10 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     namePrefix: "pasted-doc",
                     uriComponent: true
                 });
+                if (this.looksLikeBinaryPreviewFile(asset.file)) {
+                    await this.ingestOpenedFile(asset.file, { filename: asset.file.name });
+                    return;
+                }
                 if (!this.isTextLikeFile(asset.file)) {
                     this.showMessage("Pasted data is not a text/markdown document");
                     return;
@@ -2191,10 +2210,99 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private looksLikeBinaryPreviewFile(file: File): boolean {
-        const mime = (file.type || "").toLowerCase();
-        const name = (file.name || "").toLowerCase();
-        if (mime.startsWith("image/") || mime === "application/pdf") return true;
-        return /\.(png|jpe?g|gif|webp|bmp|svg|avif|pdf)$/i.test(name);
+        return looksLikePreviewableBinary(file);
+    }
+
+    /**
+     * Open a dropped / pasted / picked file using Open & share policy.
+     * Images and PDFs render in-place by default instead of being read as UTF-8.
+     */
+    private async ingestOpenedFile(
+        file: File,
+        opts?: { virtualPath?: string | null; filename?: string; channel?: OpenChannel | OpenChannel[] }
+    ): Promise<boolean> {
+        const settings = await loadSettings().catch(() => null);
+        rememberOpenPolicyFromSettings(settings);
+        const kind = classifyOpenKind(file);
+        const sink = resolveOpenPolicy(
+            settings?.openPolicy ?? peekOpenPolicy(),
+            "viewer",
+            kind,
+            opts?.channel || "open"
+        );
+        if (sink === "workcenter") {
+            return this.handoffOpenedFile("workcenter", file, opts?.virtualPath);
+        }
+        if (sink === "explorer") {
+            return this.handoffOpenedFile("explorer", file, opts?.virtualPath);
+        }
+        if (sink === "external" || sink === "system") {
+            const url = URL.createObjectURL(file);
+            this.assetObjectUrls.push(url);
+            try {
+                const opened = globalThis.open?.(url, "_blank", "noopener,noreferrer");
+                if (opened) return true;
+            } catch {
+                /* fall through to in-viewer preview */
+            }
+        }
+        if (this.looksLikeBinaryPreviewFile(file)) {
+            this.showSharedBinaryPreview(file);
+            if (opts?.virtualPath) {
+                this.sourceUrl = this.normalizeSourceUrl(opts.virtualPath);
+                this.options.source = opts.virtualPath;
+            }
+            if (opts?.filename || file.name) this.options.filename = opts?.filename || file.name;
+            return true;
+        }
+        if (!this.isTextLikeFile(file)) {
+            this.showMessage(`Unsupported file type for viewer: ${file.name || file.type || "binary file"}`);
+            return false;
+        }
+        const text = await file.text().catch(() => "");
+        this.ingestOpenedMarkdownBody(text, opts?.filename || file.name, opts?.virtualPath ?? null);
+        return true;
+    }
+
+    private async handoffOpenedFile(
+        dest: "workcenter" | "explorer",
+        file: File,
+        virtualPath?: string | null
+    ): Promise<boolean> {
+        const filename = file.name || (dest === "explorer" ? "file" : "document.md");
+        const src = String(virtualPath || filename);
+        if (shouldHandoffViewToSibling(dest)) {
+            try {
+                const content = this.isTextLikeFile(file) ? await file.text() : "";
+                stashSkuHandoff({ dest, content, filename, src });
+            } catch {
+                stashSkuHandoff({ dest, filename, src });
+            }
+            globalThis.location.assign(publicHrefForSku(dest === "explorer" ? "explorer" : "process"));
+            return true;
+        }
+        try {
+            const sent = await sendViewProtocolMessage({
+                type: dest === "explorer" ? "file-save" : "content-share",
+                source: "viewer",
+                destination: dest,
+                contentType: file.type || "application/octet-stream",
+                attachments: [{ data: file, source: "viewer-open-policy" }],
+                data: { filename, path: src, source: src }
+            });
+            if (sent) {
+                this.showMessage(dest === "explorer" ? `Sent ${filename} to Explorer` : `Sent ${filename} to Work Center`);
+                return true;
+            }
+        } catch (error) {
+            console.warn("[Viewer] Open-policy handoff failed:", error);
+        }
+        if (this.looksLikeBinaryPreviewFile(file)) {
+            this.showSharedBinaryPreview(file);
+            return true;
+        }
+        this.showMessage(`Could not send ${filename} to ${dest}`);
+        return false;
     }
 
     /** Image / PDF / downloadable blob — not markdown ingest. */
@@ -2220,11 +2328,34 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private isTextLikeFile(file: File): boolean {
+        if (this.looksLikeBinaryPreviewFile(file)) return false;
         const name = (file.name || "").toLowerCase();
         const type = (file.type || "").toLowerCase();
 
-        if (!type || type.startsWith("text/")) return true;
+        if (type.startsWith("text/")) return true;
         if (type.includes("markdown") || type.includes("json") || type.includes("xml")) return true;
+        if (!type) {
+            return [
+                ".md",
+                ".markdown",
+                ".mdown",
+                ".mkd",
+                ".mkdn",
+                ".mdtxt",
+                ".mdtext",
+                ".txt",
+                ".json",
+                ".xml",
+                ".html",
+                ".htm",
+                ".css",
+                ".js",
+                ".ts",
+                ".tsx",
+                ".yml",
+                ".yaml"
+            ].some((ext) => name.endsWith(ext));
+        }
 
         return [
             ".md",
@@ -2692,8 +2823,11 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             this.documentOpenListener = (ev: Event): void => {
                 const detail = (ev as CustomEvent<{ content?: string; filename?: string; src?: string }>).detail;
                 const text = String(detail?.content || "");
-                if (!text.trim()) return;
-                this.setContent(text, detail?.filename, detail?.src || null);
+                if (text.trim()) {
+                    this.setContent(text, detail?.filename, detail?.src || null);
+                    return;
+                }
+                void this.pullCapacitorPendingOpen();
             };
             window.addEventListener("cwsp:document-open", this.documentOpenListener);
         }
@@ -2703,6 +2837,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         void this.markdownSettingsPromise;
         this.isViewVisible = true;
         this.refreshDocumentTheme();
+        void this.pullCapacitorPendingOpen();
     }
 
     private onUnmount(): void {
@@ -2729,12 +2864,71 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.slotProjectingHost = null;
     }
 
+    /**
+     * WHY: Capacitor share-intent can fire before the viewer binds. Read the native
+     * pending-share stash here so a second open replaces the painted document.
+     */
+    private async pullCapacitorPendingOpen(): Promise<void> {
+        try {
+            const g = globalThis as { Capacitor?: { isNativePlatform?: () => boolean } };
+            if (typeof g.Capacitor?.isNativePlatform !== "function" || !g.Capacitor.isNativePlatform()) {
+                return;
+            }
+            const { invokeCwsPlatformIPC } = await import("com/routing/native/cws-bridge");
+            const peek = await invokeCwsPlatformIPC({ channel: "launcher:pending-share" });
+            if (!peek?.ok) return;
+            const echo = (peek.echo || peek) as {
+                text?: string;
+                title?: string;
+                name?: string;
+                mime?: string;
+                url?: string;
+                hasFile?: boolean;
+            };
+            let file: File | null = null;
+            if (echo.hasFile) {
+                const read = await invokeCwsPlatformIPC({ channel: "launcher:read-share-file" });
+                const blob = (read.echo || read) as { data?: string; name?: string; mime?: string };
+                if (blob?.data) {
+                    const { dataUrlToFile } = await import("com/routing/channel/sku-ingress");
+                    file = await dataUrlToFile(
+                        blob.data,
+                        String(blob.name || echo.name || "shared.bin"),
+                        String(blob.mime || echo.mime || "application/octet-stream")
+                    );
+                }
+            }
+            await invokeCwsPlatformIPC({ channel: "launcher:ack-share" }).catch(() => null);
+            const source = String(echo.url || "").trim() || null;
+            const filename = String(echo.name || echo.title || file?.name || "").trim();
+            if (file && this.looksLikeBinaryPreviewFile(file)) {
+                this.showSharedBinaryPreview(file);
+                if (filename) this.options.filename = filename;
+                return;
+            }
+            if (file && this.isTextLikeFile(file)) {
+                const text = await file.text().catch(() => "");
+                this.ingestOpenedMarkdownBody(text, filename || file.name, source);
+                return;
+            }
+            const text = String(echo.text || "").trim();
+            if (text) this.ingestOpenedMarkdownBody(text, filename, source);
+        } catch {
+            /* no pending share */
+        }
+    }
+
     private onShow(): void {
         this._sheet ??= loadAsAdopted(style) as CSSStyleSheet;
         this.applyCustomStyles();
         this.markdownSettingsPromise = this.loadMarkdownSettings();
         this.isViewVisible = true;
         this.refreshDocumentTheme();
+        const handed = takeSkuHandoff("viewer", "document");
+        if (handed?.content?.trim()) {
+            this.ingestOpenedMarkdownBody(handed.content, handed.filename, handed.src);
+        }
+        void this.pullCapacitorPendingOpen();
         console.log("[Viewer] Shown");
     }
 
@@ -2933,7 +3127,22 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
 
         if (fileEarly && this.looksLikeBinaryPreviewFile(fileEarly)) {
-            this.showSharedBinaryPreview(fileEarly);
+            const channel: OpenChannel[] = fromShareTarget
+                ? ["share-target"]
+                : fromLaunchQueue
+                  ? ["launch-queue"]
+                  : ["open"];
+            await this.ingestOpenedFile(fileEarly, {
+                virtualPath: this.pickDocumentSourcePath(
+                    payload?.virtualPath,
+                    payload?.src,
+                    payload?.path,
+                    payload?.hint?.source,
+                    payload?.source
+                ),
+                filename: hintName || fileEarly.name,
+                channel
+            });
             return;
         }
 
