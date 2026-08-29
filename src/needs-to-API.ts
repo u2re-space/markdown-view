@@ -25,8 +25,8 @@ import { publicHrefForSku, shouldHandoffViewToSibling, stashSkuHandoff, takeSkuH
 import {
     classifyOpenKind,
     looksLikePreviewableBinary,
-    peekOpenPolicy,
     rememberOpenPolicyFromSettings,
+    resolveHostOpenPolicy,
     resolveOpenPolicy,
     type OpenChannel
 } from "com/config/open-policy";
@@ -235,6 +235,11 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private _sheet: CSSStyleSheet | null = null;
     private pasteController: AbortController | null = null;
     private documentOpenListener: ((ev: Event) => void) | null = null;
+    private shareIntentListener: ((ev: Event) => void) | null = null;
+    /** Image/PDF opened before the render slot exists — paint after `render()`. */
+    private pendingBinaryPreview: File | null = null;
+    /** INVARIANT: markdown `contentRef` must not overwrite an in-place image/PDF. */
+    private binaryPreviewActive = false;
     /** Whole-page drag/drop when the viewer is standalone (captures misses on shell padding). */
     private windowDnDController: AbortController | null = null;
     private isViewVisible = false;
@@ -368,7 +373,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.syncOutlineToolbarState();
         this.syncToolbarDocumentTitle();
 
-        if (renderTarget && rawTarget) {
+        this.flushPendingBinaryPreview();
+        if (!this.binaryPreviewActive && renderTarget && rawTarget) {
             this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
         }
 
@@ -432,7 +438,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.syncOutlineToolbarState();
         this.syncToolbarDocumentTitle();
 
-        if (renderTarget && rawTarget) {
+        this.flushPendingBinaryPreview();
+        if (!this.binaryPreviewActive && renderTarget && rawTarget) {
             this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
         }
 
@@ -473,6 +480,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
      * Apply markdown read from transports (file/url/message). Blocks obvious binary/mojibake before mutating reactive content (`contentRef`).
      */
     private ingestOpenedMarkdownBody(body: string, filename?: string, source?: string | null): void {
+        this.binaryPreviewActive = false;
+        this.pendingBinaryPreview = null;
         if (body.length > 0 && textIngressLooksCorrupt(body)) {
             this.setContent(
                 "> This payload does not look like UTF-8 markdown (binary file or unsupported format).\n>\n> Open a `.md` / `.txt` file, paste as plain text, or attach binaries via Work Center.\n\n",
@@ -756,7 +765,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private renderMarkdown(content: string, renderTarget: HTMLElement, rawTarget: HTMLPreElement): void {
-        if (!renderTarget) return;
+        if (!renderTarget || this.binaryPreviewActive) return;
         const seq = ++this.renderSeq;
 
         const looksLikeHtmlDocument = (text: string): boolean => {
@@ -1047,14 +1056,23 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         const contentParam = String(params.content || "");
         if (contentParam.trim()) {
             this.contentRef.value = contentParam;
-        } else if (sourceParam && isVirtualFsPath(String(sourceParam))) {
-            void provide(String(sourceParam)).then(async (file) => {
-                if (!file) return;
-                await this.ingestOpenedFile(file, {
-                    virtualPath: String(sourceParam),
-                    filename: filenameParam ? String(filenameParam) : file.name
+        } else if (sourceParam) {
+            const src = String(sourceParam).trim();
+            /* WHY: `/assets/` is not OPFS. provide() fetches same-origin; without this the window stayed on DEFAULT_CONTENT. */
+            if (isVirtualFsPath(src) || /^\/assets(?:\/|$)/i.test(src)) {
+                void provide(src).then(async (file) => {
+                    if (!file) {
+                        if (/^\/assets(?:\/|$)/i.test(src)) {
+                            void this.openMarkdownFromUrl(src, filenameParam ? String(filenameParam) : undefined);
+                        }
+                        return;
+                    }
+                    await this.ingestOpenedFile(file, {
+                        virtualPath: src,
+                        filename: filenameParam ? String(filenameParam) : file.name
+                    });
                 });
-            });
+            }
         }
         if (this.element) {
             this.syncToolbarDocumentTitle();
@@ -2225,7 +2243,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         rememberOpenPolicyFromSettings(settings);
         const kind = classifyOpenKind(file);
         const sink = resolveOpenPolicy(
-            settings?.openPolicy ?? peekOpenPolicy(),
+            resolveHostOpenPolicy(settings),
             "viewer",
             kind,
             opts?.channel || "open"
@@ -2307,11 +2325,13 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
     /** Image / PDF / downloadable blob — not markdown ingest. */
     private showSharedBinaryPreview(file: File): void {
+        this.binaryPreviewActive = true;
         const target = this.queryViewerSlotted("[data-render-target]");
         if (!target) {
-            this.showMessage(file.name || "Opened file");
+            this.pendingBinaryPreview = file;
             return;
         }
+        this.pendingBinaryPreview = null;
         const url = URL.createObjectURL(file);
         this.assetObjectUrls.push(url);
         const mime = (file.type || "").toLowerCase();
@@ -2325,6 +2345,11 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             target.innerHTML = `<p>Opened ${safeName} (${file.size} bytes)</p><a href="${url}" download="${safeName}">Download</a>`;
         }
         this.showMessage(name);
+    }
+
+    private flushPendingBinaryPreview(): void {
+        const file = this.pendingBinaryPreview;
+        if (file) this.showSharedBinaryPreview(file);
     }
 
     private isTextLikeFile(file: File): boolean {
@@ -2405,11 +2430,14 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private showMessage(message: string): void {
-        if (this.shellContext) {
-            this.shellContext.showMessage(message);
-        } else {
-            console.log(`[Viewer] ${message}`);
+        const show =
+            this.shellContext?.showMessage ||
+            this.options?.shellContext?.showMessage;
+        if (typeof show === "function") {
+            show.call(this.shellContext || this.options?.shellContext, message);
+            return;
         }
+        console.log(`[Viewer] ${message}`);
     }
 
     private normalizeMarkdownExtensionFlags(rawFlags?: string): string {
@@ -2827,14 +2855,26 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     this.setContent(text, detail?.filename, detail?.src || null);
                     return;
                 }
+                const src = String(detail?.src || "").trim();
+                if (src) {
+                    this.applyRouteParams({ src, filename: detail?.filename });
+                    return;
+                }
                 void this.pullCapacitorPendingOpen();
             };
             window.addEventListener("cwsp:document-open", this.documentOpenListener);
+        }
+        if (!this.shareIntentListener) {
+            this.shareIntentListener = (): void => {
+                void this.pullCapacitorPendingOpen();
+            };
+            window.addEventListener("cws:shareIntent", this.shareIntentListener);
         }
         ensureViewerIconRuntime();
         this._sheet ??= loadAsAdopted(style) as CSSStyleSheet;
         this.applyCustomStyles();
         void this.markdownSettingsPromise;
+        this.flushPendingBinaryPreview();
         this.isViewVisible = true;
         this.refreshDocumentTheme();
         void this.pullCapacitorPendingOpen();
@@ -2852,6 +2892,10 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         if (this.documentOpenListener) {
             window.removeEventListener("cwsp:document-open", this.documentOpenListener);
             this.documentOpenListener = null;
+        }
+        if (this.shareIntentListener) {
+            window.removeEventListener("cws:shareIntent", this.shareIntentListener);
+            this.shareIntentListener = null;
         }
         this.windowDnDController?.abort();
         this.windowDnDController = null;
@@ -2898,21 +2942,27 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     );
                 }
             }
-            await invokeCwsPlatformIPC({ channel: "launcher:ack-share" }).catch(() => null);
             const source = String(echo.url || "").trim() || null;
             const filename = String(echo.name || echo.title || file?.name || "").trim();
+            const text = String(echo.text || "").trim();
+            /* INVARIANT: ack only after paint — share-intent used to delete the stash first. */
+            let applied = false;
             if (file && this.looksLikeBinaryPreviewFile(file)) {
                 this.showSharedBinaryPreview(file);
                 if (filename) this.options.filename = filename;
-                return;
+                applied = true;
+            } else if (file && this.isTextLikeFile(file)) {
+                this.ingestOpenedMarkdownBody(await file.text().catch(() => ""), filename || file.name, source);
+                applied = true;
+            } else if (text) {
+                this.ingestOpenedMarkdownBody(text, filename, source);
+                applied = true;
             }
-            if (file && this.isTextLikeFile(file)) {
-                const text = await file.text().catch(() => "");
-                this.ingestOpenedMarkdownBody(text, filename || file.name, source);
-                return;
-            }
-            const text = String(echo.text || "").trim();
-            if (text) this.ingestOpenedMarkdownBody(text, filename, source);
+            if (!applied) return;
+            await invokeCwsPlatformIPC({ channel: "launcher:ack-share" }).catch(() => null);
+            if (this.binaryPreviewActive) return;
+            this.saveState();
+            this.repaintMarkdown();
         } catch {
             /* no pending share */
         }
