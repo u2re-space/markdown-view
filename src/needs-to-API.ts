@@ -10,7 +10,7 @@
 import { H, normalizeDataAsset, parseDataUrl, isBase64Like, decodeBase64ToBytes, openDirectory, provide, defineElement, getDir, normalizePath, isVirtualFsPath, matchMappedRoot, pickAssetDirectory, mountPickedDirectory, observeFileSystemHandle, findEntryRelPath, relPathCandidates, provideBoundRelative, resolveFileUnderDirectory, indexDirectoryFiles, originalRelFromRef, isMarkdownRelativeRef } from "@fest-lib/lure";
 import { pickMarkdownFile, pickSidecarDirectoryFiles, saveMarkdownBlob } from "@fest-lib/lure/markdown-assets";
 import { ref, affected } from "@fest-lib/object";
-import { loadAsAdopted, removeAdopted } from "@fest-lib/dom";
+import { loadAsAdopted, removeAdopted } from "@fest-lib/style-lib";
 import DOMPurify from 'dompurify';
 import { ensureStyleSheet, reinitializeRegistry } from "@fest-lib/icon";
 import type { BaseViewOptions, ShellContext, ViewLifecycle, ViewOptions, ViewId } from "views/types";
