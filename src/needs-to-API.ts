@@ -10,7 +10,14 @@
 import { H, normalizeDataAsset, parseDataUrl, isBase64Like, decodeBase64ToBytes, openDirectory, provide, defineElement, getDir, normalizePath, isVirtualFsPath, matchMappedRoot, pickAssetDirectory, mountPickedDirectory, observeFileSystemHandle, findEntryRelPath, relPathCandidates, provideBoundRelative, resolveFileUnderDirectory, indexDirectoryFiles, originalRelFromRef, isMarkdownRelativeRef } from "@fest-lib/lure";
 import { pickMarkdownFile, pickSidecarDirectoryFiles, saveMarkdownBlob } from "@fest-lib/lure/markdown-assets";
 import { ref, affected } from "@fest-lib/object";
-import { loadAsAdopted, removeAdopted } from "@fest-lib/style-lib";
+import {
+    cssLayerBlock,
+    cssLayerOrder,
+    loadAsAdopted,
+    normalizeCssForLayer,
+    removeAdopted,
+    VIEWER_CSS_LAYER_ORDER,
+} from "@fest-lib/style-lib";
 import DOMPurify from 'dompurify';
 import { ensureStyleSheet, reinitializeRegistry } from "@fest-lib/icon";
 import type { BaseViewOptions, ShellContext, ViewLifecycle, ViewOptions, ViewId } from "views/types";
@@ -78,15 +85,6 @@ const SANITIZE_OPTIONS = {
     FORBID_CONTENTS: ["script", "style", "iframe", "object", "embed", "applet", "noscript", "template"]
 };
 const DEFAULT_MARKDOWN_EXTENSION_FLAGS = "g";
-const VIEWER_CSS_LAYER_ORDER = [
-    "rs-md-base",
-    "rs-md-system",
-    "rs-md-modules",
-    "rs-md-user",
-    "rs-md-print",
-    "rs-md-user-print"
-] as const;
-
 let viewerIconRuntimeInitialized = false;
 
 const ensureViewerIconRuntime = (): void => {
@@ -2519,19 +2517,6 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
     }
 
-    private createLayerBlock(layerName: string, cssText: string): string {
-        const body = (cssText || "").trim();
-        if (!body) return "";
-        return `@layer ${layerName} {\n${body}\n}`;
-    }
-
-    private normalizeUserCssForLayer(layerName: string, cssText: string): string {
-        const trimmed = (cssText || "").trim();
-        if (!trimmed) return "";
-        if (trimmed.startsWith("@layer")) return trimmed;
-        return this.createLayerBlock(layerName, trimmed);
-    }
-
     private getPresetVariablesCss(): string {
         const preset = this.markdownSettings.preset;
         if (preset === "classic") {
@@ -2716,12 +2701,12 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             : "";
 
         const chunks: string[] = [
-            `@layer ${VIEWER_CSS_LAYER_ORDER.join(", ")};`,
-            this.createLayerBlock("rs-md-system", systemCss),
-            this.createLayerBlock("rs-md-modules", modulesCss),
-            this.normalizeUserCssForLayer("rs-md-user", screenCss),
-            this.createLayerBlock("rs-md-print", `${builtInPrintCss}\n${pageCss}`),
-            this.normalizeUserCssForLayer(
+            cssLayerOrder(VIEWER_CSS_LAYER_ORDER),
+            cssLayerBlock("rs-md-system", systemCss),
+            cssLayerBlock("rs-md-modules", modulesCss),
+            normalizeCssForLayer("rs-md-user", screenCss),
+            cssLayerBlock("rs-md-print", `${builtInPrintCss}\n${pageCss}`),
+            normalizeCssForLayer(
                 "rs-md-user-print",
                 userPrintCss ? `@media print {\n${userPrintCss}\n}` : ""
             )
