@@ -16,6 +16,8 @@ import {
     loadAsAdopted,
     normalizeCssForLayer,
     removeAdopted,
+    scheduleBakeScreenColors,
+    unbakeScreenColors,
     VIEWER_CSS_LAYER_ORDER,
 } from "@fest-lib/style-lib";
 import DOMPurify from 'dompurify';
@@ -512,6 +514,22 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private refreshDocumentTheme(): void {
         if (typeof document === "undefined") return;
         this.applyViewerDocumentTheme(this.viewerColorScheme);
+        this.bakeViewerScreenColors();
+    }
+
+    /** WHY: snapshot `color-mix` / token colors for `@media screen`; print keeps the live sheet. */
+    private bakeViewerScreenColors(): void {
+        const shell = this.element;
+        if (shell instanceof HTMLElement) scheduleBakeScreenColors(shell);
+        const prose = this.queryViewerSlotted("[data-render-target]");
+        if (prose instanceof HTMLElement && prose !== shell) scheduleBakeScreenColors(prose);
+    }
+
+    private unbakeViewerScreenColors(): void {
+        const shell = this.element;
+        if (shell instanceof HTMLElement) unbakeScreenColors(shell);
+        const prose = this.queryViewerSlotted("[data-render-target]");
+        if (prose instanceof HTMLElement && prose !== shell) unbakeScreenColors(prose);
     }
 
     private applyViewerDocumentTheme(mode: ViewerColorScheme): void {
@@ -2888,6 +2906,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             removeAdopted(this.customSheet);
             this.customSheet = null;
         }
+        this.unbakeViewerScreenColors();
         removeAdopted(this._sheet!);
         this.element = null;
         this.slotProjectingHost = null;
@@ -2968,6 +2987,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private onHide(): void {
+        this.unbakeViewerScreenColors();
         //removeAdopted(this._sheet);
         this.saveState();
         this.isViewVisible = false;
