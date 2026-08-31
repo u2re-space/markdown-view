@@ -5,7 +5,7 @@
  * markdown-viewer.scss — optimized/refactored
  *
  * Стратегия:
- *  - @layer order: veela `_layers.scss` SoT (do not declare a shorter prelude)
+ *  - shared Veela layer registry; no local prelude
  *  - light-dark() + color-scheme: inherit — вместо двух @media prefers-color-scheme
  *  - @each по SCSS-map для heading-размеров (одно место правды)
  *  - %img-align placeholder — устраняет 7-кратный повтор [align] / [width] / [height]
@@ -18,18 +18,16 @@
  *
  * NOTE: `--md-*` are a markdown-specific semantic layer GENERATED from canonical
  * `--color-*` via the parameterized `md-vars($mode)` mixin (source of truth: veela
- * `core/misc/_tokens.scss`). `--print-*` color defaults are concrete `light-dark(#…)` scoped to
+ * `core/_tokens.scss`). `--print-*` color defaults are concrete `light-dark(#…)` scoped to
  * markdown-view hosts. Both already trace to canonical `--color-*` for value unity.
  */
 
 @use "sass:map";
 @use "sass:list";
-@use "layers";
-@use "core/misc/config" as config;
-@use "core/misc/tokens" as tokens;
-@use "core/misc/mixins" as mixins;
-
-@import "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap";
+@use "veela-lib/layers";
+@use "veela-lib/core/config" as config;
+@use "veela-lib/core/tokens" as tokens;
+@use "veela-lib/core/mixins" as mixins;
 
 /* ─── Animations ──────────────────────────────────────────────────────────── */
 
@@ -272,7 +270,7 @@ $_h-sizes: (
     LAYER: markdown  (screen + shared)
     ═══════════════════════════════════════════════════════════════════════════ */
 
-@layer markdown {
+@layer components {
 
     /* Токены корневого элемента */
     @scope (
@@ -1645,7 +1643,7 @@ $_h-sizes: (
     LAYER: print-breaks
     ═══════════════════════════════════════════════════════════════════════════ */
 
-@layer print-breaks {
+@layer print {
     @media print {
         /* Базовые правила для всех блочных элементов */
         :where(h1, h2, h3, h4, h5, h6, p, pre, table, img, blockquote, hr) {

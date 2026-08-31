@@ -1,11 +1,11 @@
 @use "sass:string";
-@use "layers";
+@use "veela-lib/layers";
 @use "veela-lib" as *;
-@use "veela-lib" as ui;
+@use "veela-lib/ui/chrome-mixins" as ui;
 
 /*
  * NOTE: `--view-*` here are a viewer-specific semantic layer DERIVED from canonical
- * `--color-*` (source of truth: veela `core/misc/_tokens.scss`) with `light-dark()`
+ * `--color-*` (source of truth: veela `core/_tokens.scss`) with `light-dark()`
  * fallbacks for shadow-DOM self-sufficiency. They are not duplicates of canonical
  * color values; keep the fallbacks.
  */
@@ -58,7 +58,7 @@
 // wrong compounds can invalidate an entire comma-separated selector list.
 //
 // NOTE: `--view-*` here are a viewer-specific semantic layer DERIVED from canonical
-// `--color-*` (source of truth: veela `core/misc/_tokens.scss`). This mixin is the
+// `--color-*` (source of truth: veela `core/_tokens.scss`). This mixin is the
 // parameterized form (kept per plan); it references canonical `--color-*` with `light-dark()`
 // fallbacks for shadow-DOM self-sufficiency. The shared `--view-border/fg-muted/hover-bg/
 // selected-bg/selected-border` BASE defaults also live in canonical `:root`.
@@ -126,7 +126,7 @@
     :host(.markdown-view),
     :host(cw-view-viewer)
 ) {
-    @layer viewer.tokens {
+    @layer tokens {
 
         :host,
         :scope,
@@ -181,7 +181,7 @@
         }
     }
 
-    @layer viewer.base {
+    @layer base {
 
         /*
         * Shell = column flex. Typical tree: .cw-view-viewer-shell > .view-viewer >
@@ -333,7 +333,7 @@
         }
     }
 
-    @layer viewer.components {
+    @layer components {
 
         /*
      * Nested toolbar host must always stretch full row inside view-viewer.
@@ -734,7 +734,7 @@
         }
     }
 
-    @layer viewer.utilities {
+    @layer utilities {
         @keyframes view-spin {
             to {
                 transform: rotate(360deg);
@@ -821,9 +821,7 @@
         }
     }
 
-    @layer layer.view.common, layer.view.viewer;
-
-    @layer layer.view.common {
+    @layer layout {
         :where([data-cw-view-host="true"]) {
             display: block;
             inline-size: 100%;
@@ -833,7 +831,7 @@
         }
     }
 
-    @layer layer.view.viewer {
+    @layer components {
         .cw-view-viewer-shell {
             display: flex;
             flex-direction: column;
@@ -965,7 +963,7 @@
     }
 
     //
-    @layer view.viewer {
+    @layer components {
         // ==========================================================================
         // Loading Indicator Component
         // ==========================================================================
@@ -1370,7 +1368,7 @@
         navigation: auto;
     }
 
-    @layer view-transitions {
+    @layer theme {
 
         // ── Named capture target ───────────────────────────────────────────────
         // The single visible [data-view] inside the shell content area gets the
@@ -1567,7 +1565,7 @@
             }
         }
 
-        @media (max-inline-size: 768px) {
+        @media (max-width: 768px) {
             :host, :scope {
                 --view-padding: var(--space-3);
                 --view-padding-x: var(--space-4);
@@ -1585,7 +1583,7 @@
             }
         }
 
-        @media (max-inline-size: 480px) {
+        @media (max-width: 480px) {
             :host, :scope {
                 --view-padding: var(--space-2);
                 --view-padding-x: var(--space-3);
@@ -1605,7 +1603,7 @@
         }
     }
 
-    @layer shell {
+    @layer layout {
         [data-shell-content] {
 
             // Always respect hidden state in shell content.
@@ -2409,7 +2407,7 @@
             display: none;
         }
 
-        @media (max-inline-size: 768px) {
+        @media (max-width: 768px) {
             .status {
                 padding: var(--space-xs) var(--space-md);
                 font-size: 11px;
@@ -3144,7 +3142,7 @@
             opacity: 0.8;
         }
 
-        @media (max-inline-size: 1024px) {
+        @media (max-width: 1024px) {
             .editor-layout {
                 grid-template-columns: 1fr;
                 grid-template-rows: 1fr 1fr;
@@ -3175,7 +3173,7 @@
             }
         }
 
-        @media (max-inline-size: 768px) {
+        @media (max-width: 768px) {
             .editor-footer {
                 flex-direction: column;
                 align-items: stretch;
@@ -3235,7 +3233,7 @@
             }
         }
 
-        @media (max-inline-size: 480px) {
+        @media (max-width: 480px) {
             .editor-toolbar {
                 padding: var(--space-sm);
             }
@@ -3423,7 +3421,7 @@
             margin-block-start: var(--space-xl);
         }
 
-        @media (max-inline-size: 1024px) {
+        @media (max-width: 1024px) {
 
             .grid-cols-4,
             .grid-cols-3 {
@@ -3431,7 +3429,7 @@
             }
         }
 
-        @media (max-inline-size: 768px) {
+        @media (max-width: 768px) {
 
             .grid-cols-2,
             .grid-cols-3,
@@ -3452,7 +3450,7 @@
             block-size: max(100%, 100lvb);
         }
 
-        @media (max-inline-size: 768px) {
+        @media (max-width: 768px) {
             .toolbar {
                 padding: var(--space-sm);
                 block-size: auto;
@@ -3476,7 +3474,7 @@
                     padding: var(--space-xs) var(--space-sm);
                 }
 
-                @media (max-inline-size: 480px) {
+                @media (max-width: 480px) {
                     padding: var(--space-xs);
 
                     .left,
@@ -3666,7 +3664,7 @@
         }
     }
 
-    @layer layer.view.viewer {
+    @layer components {
 
         /*
         * Markdown viewer toolbar: [left actions] · [flexible gap] · [right actions].
@@ -4090,7 +4088,7 @@
 
     }
 
-    @layer layer.view.viewer {
+    @layer components {
 
         /* Tokens on viewer hosts only — never `:root`/`html` (would leak into environment shell). */
         :host,
@@ -4182,7 +4180,7 @@
             --color-surface: transparent;
         }
 
-        @layer layer.view.viewer {
+        @layer components {
 
             /*
             * Base / immersive / minimal shells: viewer chrome spans the content track (not min-content / “floating” island).
@@ -4196,7 +4194,7 @@
             }
         }
 
-        @layer layer.view.viewer {
+        @layer components {
 
             /*
             * Shell = column flex. Typical tree: .cw-view-viewer-shell > .view-viewer >
@@ -4353,7 +4351,7 @@
             }
         }
 
-        @layer layer.view.viewer {
+        @layer components {
             @keyframes view-spin {
                 to {
                     transform: rotate(360deg);
