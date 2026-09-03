@@ -280,7 +280,23 @@ export class MarkdownView extends UIElement {
                 fileStr.startsWith("./") ||
                 fileStr.startsWith("../")) {
                 try {
-                    const fetched = await provide(fileStr);
+                    if (/^\/(?:sdcard|saf)(?:\/|$)/i.test(fileStr)) {
+                        try {
+                            const { ensureNativeStorageProvide } = await import("fl-ui/explorer/storage-bridge");
+                            await ensureNativeStorageProvide();
+                        } catch {
+                            /* web */
+                        }
+                    }
+                    let fetched = await provide(fileStr);
+                    if (!fetched && /^\/(?:sdcard|saf)(?:\/|$)/i.test(fileStr)) {
+                        try {
+                            const { readNativeStorageFile } = await import("fl-ui/explorer/storage-bridge");
+                            fetched = await readNativeStorageFile(fileStr);
+                        } catch {
+                            fetched = null;
+                        }
+                    }
                     if (fetched) {
                         const text = await fetched.text?.();
                         if (text) {

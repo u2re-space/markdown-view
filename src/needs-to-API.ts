@@ -1079,7 +1079,24 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             const src = String(sourceParam).trim();
             /* WHY: `/assets/` is not OPFS. provide() fetches same-origin; without this the window stayed on DEFAULT_CONTENT. */
             if (isVirtualFsPath(src) || /^\/assets(?:\/|$)/i.test(src)) {
-                void provide(src).then(async (file) => {
+                void (async () => {
+                    if (/^\/(?:sdcard|saf)(?:\/|$)/i.test(src)) {
+                        try {
+                            const { ensureNativeStorageProvide } = await import("fl-ui/explorer/storage-bridge");
+                            await ensureNativeStorageProvide();
+                        } catch {
+                            /* web */
+                        }
+                    }
+                    let file = await provide(src).catch(() => null);
+                    if (!file && /^\/(?:sdcard|saf)(?:\/|$)/i.test(src)) {
+                        try {
+                            const { readNativeStorageFile } = await import("fl-ui/explorer/storage-bridge");
+                            file = await readNativeStorageFile(src);
+                        } catch {
+                            file = null;
+                        }
+                    }
                     if (!file) {
                         if (/^\/assets(?:\/|$)/i.test(src)) {
                             void this.openMarkdownFromUrl(src, filenameParam ? String(filenameParam) : undefined);
@@ -1090,7 +1107,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                         virtualPath: src,
                         filename: filenameParam ? String(filenameParam) : file.name
                     });
-                });
+                })();
             }
         }
         if (this.element) {
@@ -1324,7 +1341,23 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         const normalizedSource = this.normalizeSourceUrl(source);
         if (!normalizedSource) return false;
         if (isVirtualFsPath(normalizedSource)) {
-            const file = await provide(normalizedSource).catch(() => null);
+            if (/^\/(?:sdcard|saf)(?:\/|$)/i.test(normalizedSource)) {
+                try {
+                    const { ensureNativeStorageProvide } = await import("fl-ui/explorer/storage-bridge");
+                    await ensureNativeStorageProvide();
+                } catch {
+                    /* web */
+                }
+            }
+            let file = await provide(normalizedSource).catch(() => null);
+            if (!file && /^\/(?:sdcard|saf)(?:\/|$)/i.test(normalizedSource)) {
+                try {
+                    const { readNativeStorageFile } = await import("fl-ui/explorer/storage-bridge");
+                    file = await readNativeStorageFile(normalizedSource);
+                } catch {
+                    file = null;
+                }
+            }
             if (!file) return false;
             const ok = await this.ingestOpenedFile(file, {
                 virtualPath: normalizedSource,
