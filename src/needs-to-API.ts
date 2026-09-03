@@ -31,6 +31,7 @@ import { ViewerChannelAction, ExplorerChannelAction } from "views/apis/channel-a
 import { loadSettings } from "com/config/Settings";
 import { sendViewProtocolMessage } from "com/core/UniformViewTransport";
 import { publicHrefForSku, shouldHandoffViewToSibling, stashSkuHandoff, takeSkuHandoff } from "com/config/ecosystem-skus";
+import { dataUrlToFile, isAndroidLocalShareUri } from "com/routing/channel/sku-ingress";
 import {
     classifyOpenKind,
     looksLikePreviewableBinary,
@@ -236,6 +237,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private pasteController: AbortController | null = null;
     private documentOpenListener: ((ev: Event) => void) | null = null;
     private shareIntentListener: ((ev: Event) => void) | null = null;
+    private visibilityOpenListener: (() => void) | null = null;
+    private capacitorOpenPull: Promise<void> = Promise.resolve();
     /** Image/PDF opened before the render slot exists — paint after `render()`. */
     private pendingBinaryPreview: File | null = null;
     /** INVARIANT: markdown `contentRef` must not overwrite an in-place image/PDF. */
@@ -2873,6 +2876,13 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             };
             window.addEventListener("cws:shareIntent", this.shareIntentListener);
         }
+        if (!this.visibilityOpenListener) {
+            this.visibilityOpenListener = (): void => {
+                if (document.visibilityState === "visible") void this.pullCapacitorPendingOpen();
+            };
+            document.addEventListener("visibilitychange", this.visibilityOpenListener);
+            window.addEventListener("pageshow", this.visibilityOpenListener);
+        }
         ensureViewerIconRuntime();
         this._sheet ??= loadAsAdopted(style) as CSSStyleSheet;
         this.applyCustomStyles();
@@ -2900,6 +2910,11 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             window.removeEventListener("cws:shareIntent", this.shareIntentListener);
             this.shareIntentListener = null;
         }
+        if (this.visibilityOpenListener) {
+            document.removeEventListener("visibilitychange", this.visibilityOpenListener);
+            window.removeEventListener("pageshow", this.visibilityOpenListener);
+            this.visibilityOpenListener = null;
+        }
         this.windowDnDController?.abort();
         this.windowDnDController = null;
         if (this.customSheet) {
@@ -2916,7 +2931,15 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
      * WHY: Capacitor share-intent can fire before the viewer binds. Read the native
      * pending-share stash here so a second open replaces the painted document.
      */
-    private async pullCapacitorPendingOpen(): Promise<void> {
+    private pullCapacitorPendingOpen(): Promise<void> {
+        this.capacitorOpenPull = this.capacitorOpenPull.then(
+            () => this.pullCapacitorPendingOpenOnce(),
+            () => this.pullCapacitorPendingOpenOnce()
+        );
+        return this.capacitorOpenPull;
+    }
+
+    private async pullCapacitorPendingOpenOnce(): Promise<void> {
         try {
             const g = globalThis as { Capacitor?: { isNativePlatform?: () => boolean } };
             if (typeof g.Capacitor?.isNativePlatform !== "function" || !g.Capacitor.isNativePlatform()) {
@@ -2931,39 +2954,65 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 name?: string;
                 mime?: string;
                 url?: string;
-                hasFile?: boolean;
+                hasFile?: boolean | string | number;
+                stashedAt?: number | string;
             };
-            let file: File | null = null;
-            if (echo.hasFile) {
+            const stashedAt = Number(echo.stashedAt || 0) || 0;
+            if (!echo.text && !echo.title && !echo.name && !echo.url && echo.hasFile == null) return;
+            const flagged =
+                echo.hasFile === true || echo.hasFile === "true" || echo.hasFile === 1 || echo.hasFile === "1";
+            const url = String(echo.url || "").trim();
+            const local = isAndroidLocalShareUri(url) || isAndroidLocalShareUri(echo.text);
+            const mime = String(echo.mime || "").toLowerCase();
+            const nameHint = String(echo.name || echo.title || "").toLowerCase();
+            const wantFile =
+                flagged ||
+                local ||
+                mime.startsWith("image/") ||
+                mime.startsWith("application/") ||
+                /\.(md|markdown|txt|pdf|png|jpe?g|gif|webp|html?)$/i.test(nameHint);
+            const pullFile = async (): Promise<File | null> => {
                 const read = await invokeCwsPlatformIPC({ channel: "launcher:read-share-file" });
                 const blob = (read.echo || read) as { data?: string; name?: string; mime?: string };
-                if (blob?.data) {
-                    const { dataUrlToFile } = await import("com/routing/channel/sku-ingress");
-                    file = await dataUrlToFile(
-                        blob.data,
-                        String(blob.name || echo.name || "shared.bin"),
-                        String(blob.mime || echo.mime || "application/octet-stream")
-                    );
-                }
+                if (!blob?.data) return null;
+                return dataUrlToFile(
+                    blob.data,
+                    String(blob.name || echo.name || "shared.bin"),
+                    String(blob.mime || echo.mime || "application/octet-stream")
+                );
+            };
+            let file: File | null = wantFile ? await pullFile() : null;
+            if (wantFile && !file) {
+                await invokeCwsPlatformIPC({ channel: "launcher:restash-share-file" }).catch(() => null);
+                file = await pullFile();
             }
-            const source = String(echo.url || "").trim() || null;
+            const source = local ? null : url || null;
             const filename = String(echo.name || echo.title || file?.name || "").trim();
             const text = String(echo.text || "").trim();
             /* INVARIANT: ack only after paint — share-intent used to delete the stash first. */
             let applied = false;
-            if (file && this.looksLikeBinaryPreviewFile(file)) {
-                this.showSharedBinaryPreview(file);
-                if (filename) this.options.filename = filename;
-                applied = true;
-            } else if (file && this.isTextLikeFile(file)) {
-                this.ingestOpenedMarkdownBody(await file.text().catch(() => ""), filename || file.name, source);
-                applied = true;
-            } else if (text) {
+            if (file) {
+                /* WHY: native Open-with/Share on this SKU must paint here — open-policy handoff leaves a blank viewer. */
+                if (this.looksLikeBinaryPreviewFile(file)) {
+                    this.showSharedBinaryPreview(file);
+                    if (filename) this.options.filename = filename;
+                    applied = true;
+                } else {
+                    const body = await file.text().catch(() => "");
+                    this.ingestOpenedMarkdownBody(body, filename || file.name, source);
+                    applied = true;
+                }
+            } else if (text && !isAndroidLocalShareUri(text)) {
                 this.ingestOpenedMarkdownBody(text, filename, source);
                 applied = true;
+            } else if (url && !local) {
+                applied = await this.openMarkdownFromUrl(url, filename);
             }
             if (!applied) return;
-            await invokeCwsPlatformIPC({ channel: "launcher:ack-share" }).catch(() => null);
+            await invokeCwsPlatformIPC({
+                channel: "launcher:ack-share",
+                payload: stashedAt ? { stashedAt } : {}
+            }).catch(() => null);
             if (this.binaryPreviewActive) return;
             this.saveState();
             this.repaintMarkdown();
