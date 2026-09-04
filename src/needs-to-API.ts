@@ -1492,8 +1492,14 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
         const toolbar =
             this.element.querySelector("[data-viewer-chrome]") ||
-            this.element.querySelector("[data-viewer-toolbar]");
-        const pathForm = this.element.querySelector("[data-viewer-path-form]") as HTMLFormElement | null;
+            this.queryViewerSlotted("[data-viewer-chrome]") ||
+            this.element.querySelector("[data-viewer-toolbar]") ||
+            this.queryViewerSlotted("[data-viewer-toolbar]") ||
+            this.queryViewerSlotted("[data-viewer-pathbar]");
+        const pathForm = (
+            this.element.querySelector("[data-viewer-path-form]") ||
+            this.queryViewerSlotted("[data-viewer-path-form]")
+        ) as HTMLFormElement | null;
         const content = this.element.querySelector("[data-viewer-content]") as HTMLElement | null;
         const shell =
             this.element.classList.contains("cw-view-viewer-shell") ? this.element : null;
@@ -1502,8 +1508,10 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         let showRaw = false;
 
         toolbar?.addEventListener("click", (e) => {
-            const target = e.target as HTMLElement;
-            const button = target.closest("[data-action]") as HTMLButtonElement | null;
+            const button = (e.composedPath() as EventTarget[]).find(
+                (node): node is HTMLElement =>
+                    node instanceof HTMLElement && Boolean(node.dataset?.action)
+            );
             if (!button) return;
 
             const action = button.dataset.action;
@@ -1743,42 +1751,22 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
     }
 
+    private isExtensionPage(): boolean {
+        try {
+            return globalThis.location?.protocol === "chrome-extension:";
+        } catch {
+            return false;
+        }
+    }
+
     private handleOpen(): void {
+        /* WHY: Open is a file pick. Folder-first FSA spends the user gesture;
+         * CRX then cannot open `<input type=file>`. Assets stays the folder bind. */
+        if (this.isExtensionPage()) {
+            this.handleOpenInputFallback();
+            return;
+        }
         void (async () => {
-            const canPickDir = typeof (globalThis as { showDirectoryPicker?: unknown }).showDirectoryPicker === "function";
-            const pickFile = (globalThis as { showOpenFilePicker?: (opts?: Record<string, unknown>) => Promise<FileSystemFileHandle[]> }).showOpenFilePicker;
-            if (canPickDir && typeof pickFile === "function") {
-                try {
-                    const dir = await pickAssetDirectory({ mode: "read", id: "markdown-assets" });
-                    if (dir) {
-                        const root = mountPickedDirectory(dir, "md");
-                        this.boundMountRoot = root;
-                        this.boundDirectory = dir;
-                        const [fileHandle] = await pickFile({
-                            startIn: dir,
-                            multiple: false,
-                            types: [{
-                                description: "Documents and images",
-                                accept: {
-                                    "text/markdown": [".md", ".markdown", ".mdown", ".mkd"],
-                                    "text/plain": [".txt"],
-                                    "image/*": [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg", ".avif"],
-                                    "application/pdf": [".pdf"]
-                                }
-                            }]
-                        });
-                        const rel = (await findEntryRelPath(dir, fileHandle)) || fileHandle.name;
-                        const virtual = `${root}${rel}`;
-                        const file = await fileHandle.getFile();
-                        const ok = await this.ingestOpenedFile(file, { virtualPath: virtual, filename: file.name });
-                        if (ok) this.showMessage(`Opened ${file.name}`);
-                        return;
-                    }
-                } catch (error) {
-                    if ((error as DOMException)?.name === "AbortError") return;
-                    console.warn("[ViewerView] Directory picker open failed, falling back:", error);
-                }
-            }
             const picked = await pickMarkdownFile();
             if (!picked?.file) return;
             if (picked.sidecars.length) this.rememberSidecarFiles(picked.sidecars, picked.file);
@@ -2000,6 +1988,23 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
     }
 
+    /** Walk light + shadow hosts so env `ui-window` can be stamped for print CSS. */
+    private closestPrintFrame(from: Element | null): HTMLElement | null {
+        let node: Element | null = from;
+        while (node) {
+            if (node.matches?.("ui-window, .wf-frame")) return node as HTMLElement;
+            const root = node.getRootNode();
+            node =
+                node.parentElement ??
+                (root instanceof ShadowRoot ? (root.host as Element | null) : null);
+        }
+        return (
+            document.querySelector("ui-window.env-ui-window[data-focused][data-ui-window-view='viewer']") ||
+            document.querySelector("ui-window.env-ui-window[data-ui-window-view='viewer']") ||
+            document.querySelector("ui-window.env-ui-window[data-wf-managed-view='viewer']")
+        ) as HTMLElement | null;
+    }
+
     private handlePrint(renderTarget: HTMLElement): void {
         try {
             const rawTarget = this.queryViewerSlotted("[data-raw-target]") as HTMLPreElement | null;
@@ -2012,10 +2017,23 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             }
 
             printTarget.setAttribute("data-print", "true");
-            globalThis?.print?.();
-            setTimeout(() => {
+            const root = document.documentElement;
+            /* WHY: prose lives in viewer light DOM / shadow; `closest()` does not cross roots. */
+            const frame = this.closestPrintFrame(printTarget);
+            root.setAttribute("data-print-markdown", "");
+            frame?.setAttribute("data-print-window", "");
+            let cleared = false;
+            const clearPrintMarks = (): void => {
+                if (cleared) return;
+                cleared = true;
                 printTarget.removeAttribute("data-print");
-            }, 1000);
+                root.removeAttribute("data-print-markdown");
+                frame?.removeAttribute("data-print-window");
+                globalThis.removeEventListener("afterprint", clearPrintMarks);
+            };
+            globalThis.addEventListener("afterprint", clearPrintMarks);
+            globalThis?.print?.();
+            setTimeout(clearPrintMarks, 4000);
 
             this.options.onPrint?.(this.contentRef.value);
         } catch (error) {

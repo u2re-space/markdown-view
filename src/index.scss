@@ -3644,10 +3644,20 @@
                 height: auto !important;
             }
 
+            :is(html, body):has(.env-shell-root) [data-app-layer="shell"],
+            :is(html, body):has(env-shell-container) [data-app-layer="shell"],
+            :is(html, body):has([data-shell="environment"]) [data-app-layer="shell"] {
+                display: block !important;
+            }
+
             :is(html, body):has([data-shell="base"]),
             :is(html, body):has([data-shell="immersive"]),
             :is(html, body):has([data-shell="minimal"]),
+            :is(html, body):has([data-shell="environment"]),
             :is(html, body):has(cw-shell-minimal),
+            :is(html, body):has(cw-shell-environment),
+            :is(html, body):has(.env-shell-root),
+            :is(html, body):has(env-shell-container),
             :host {
                 background: #fff !important;
                 color: #000 !important;
@@ -3691,9 +3701,32 @@
                 max-height: none !important;
             }
 
+            /* WHY: `display: contents` on env-shell-container / #app+ui-window prints blank in Chromium. */
+            :is(html, body):has([data-shell="environment"]) #app,
+            :is(html, body):has(cw-shell-environment) #app,
+            :is(html, body):has(.env-shell-root) #app,
+            :is(html, body):has(env-shell-container) #app,
+            :is(html, body):has([data-shell="environment"]) [data-app-layer-root],
+            :is(html, body):has(cw-shell-environment) [data-app-layer-root],
+            :is(html, body):has(.env-shell-root) [data-app-layer-root],
+            :is(html, body):has(env-shell-container) [data-app-layer-root],
+            cw-shell-environment,
+            env-shell-container,
+            .env-shell-root,
             cw-shell-minimal,
             cw-shell-immersive {
                 display: block !important;
+                position: static !important;
+                inset: auto !important;
+                overflow: visible !important;
+                contain: none !important;
+                container-type: normal !important;
+                content-visibility: visible !important;
+                block-size: auto !important;
+                max-block-size: none !important;
+                min-block-size: 0 !important;
+                height: auto !important;
+                max-height: none !important;
             }
 
             /* Keep markdown web-component content printable across all shells.
