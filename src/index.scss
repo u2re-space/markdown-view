@@ -2,6 +2,9 @@
 @use "veela-lib/layers";
 @use "veela-lib" as *;
 @use "veela-lib/ui/chrome-mixins" as ui;
+/* WHY: viewer adopts this sheet (not `_markdown.scss`). Without it, highlight.js
+ * paints an overlay that stays unstyled — source looks like plain code. */
+@use "veela-lib/ui/code-highlight";
 
 /*
  * NOTE: `--view-*` here are a viewer-specific semantic layer DERIVED from canonical
@@ -4005,6 +4008,12 @@
                 flex: 1 1 auto;
                 min-block-size: 0;
                 min-inline-size: 0;
+                /* WHY: Viewer sheet does not load `_markdown.scss` tokens. Overlay
+                 * color must follow `--view-code-fg`, not `--color-on-surface`. */
+                --md-fg-default: var(--view-fg, CanvasText);
+                --md-code-block-fg: var(--view-code-fg, var(--view-fg, CanvasText));
+                --md-code-block-bg: var(--view-code-bg, var(--color-surface-container, Canvas));
+                --md-bg-code: var(--view-code-bg, var(--color-surface-container, Canvas));
             }
         }
 

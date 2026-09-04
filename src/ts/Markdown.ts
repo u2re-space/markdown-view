@@ -1,10 +1,10 @@
 // @ts-ignore — canonical markdown typography lives in `modules/views/markdown-view`
 import styles from "markdown-view-typography?inline";
 import DOMPurify from 'dompurify';
-import { marked, type MarkedExtension } from "marked";
 import { E, H, provide, defineElement, property } from "@fest-lib/lure";
 import UIElement from "fl-ui/base/UIElement";
-import markedKatex from "marked-katex-extension";
+import { highlightCodeTree } from "../../../../projects/fl.ui/src/ui/markdown/highlight";
+import { configureMarkdownRendering, renderSafeMarkdown } from "../../../../projects/fl.ui/src/ui/markdown/render";
 
 const SANITIZE_OPTIONS = {
     USE_PROFILES: { html: true, mathMl: true, svg: true },
@@ -12,12 +12,7 @@ const SANITIZE_OPTIONS = {
     FORBID_CONTENTS: ["script", "style", "iframe", "object", "embed", "applet", "noscript", "template"]
 };
 
-marked?.use?.(markedKatex({
-    throwOnError: false,
-    nonStandard: true,
-    output: "mathml",
-    strict: false,
-}) as unknown as MarkedExtension);
+configureMarkdownRendering();
 
 //
 /** One document-level injection: markdown typography targets `.markdown-body`, `md-view`, etc. (see veela tokens). */
@@ -161,7 +156,7 @@ export class MarkdownView extends UIElement {
     async setContent(content: string): Promise<void> {
         this.#content = content || "";
         await this.writeToCache(this.#content).catch(console.warn.bind(console));
-        return this.setHTML(await marked.parse((this.#content || "")?.trim?.() || "")).catch(console.warn.bind(console));
+        return this.setHTML(renderSafeMarkdown((this.#content || "")?.trim?.() || "")).catch(console.warn.bind(console));
     }
 
     /**
@@ -179,6 +174,7 @@ export class MarkdownView extends UIElement {
         const html = await doc;
         const sanitized = DOMPurify?.sanitize?.((html || "")?.trim?.() || "", SANITIZE_OPTIONS) || "";
         view.innerHTML = sanitized || view.innerHTML || "";
+        highlightCodeTree(view);
         document.dispatchEvent(new CustomEvent("ext-ready", {}));
     }
 

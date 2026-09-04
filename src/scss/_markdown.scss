@@ -28,6 +28,7 @@
 @use "veela-lib/core/config" as config;
 @use "veela-lib/core/tokens" as tokens;
 @use "veela-lib/core/mixins" as mixins;
+@use "veela-lib/ui/code-highlight";
 
 /* ─── Animations ──────────────────────────────────────────────────────────── */
 

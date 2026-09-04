@@ -64,7 +64,8 @@ const isIngressSourceToken = (value: string): boolean =>
     value === "clipboard" ||
     value === "pending";
 
-import type { MarkedExtension } from "marked";
+import { highlightCodeTree } from "../../../projects/fl.ui/src/ui/markdown/highlight";
+import { configureMarkdownRendering } from "../../../projects/fl.ui/src/ui/markdown/render";
 
 let markedParserPromise: Promise<(markdown: string) => Promise<string>> | null = null;
 
@@ -84,6 +85,7 @@ const VIEWER_MAX_RENDERED_COPY_CHARS = 600_000;
 const SANITIZE_OPTIONS = {
     /** KaTeX `output: "mathml"` emits `<math>` + SVG; default DOMPurify HTML-only config strips them → raw LaTeX in the UI. */
     USE_PROFILES: { html: true, mathMl: true, svg: true },
+    ADD_ATTR: ["data-language", "data-lang"],
     FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "applet", "link", "meta", "base", "form", "noscript", "template"],
     FORBID_CONTENTS: ["script", "style", "iframe", "object", "embed", "applet", "noscript", "template"]
 };
@@ -139,18 +141,9 @@ type ViewerMarkdownSettings = {
 const getMarkedParser = async (): Promise<(markdown: string) => Promise<string>> => {
     if (markedParserPromise) return markedParserPromise;
     markedParserPromise = (async () => {
-        const [{ marked }, { default: markedKatex }] = await Promise.all([
-            import("marked"),
-            import("marked-katex-extension"),
-        ]);
-        // WHY: no DOM preprocess — `textContent`→`innerHTML` escaped README `<h1>` on the
-        // second parse (ASSETS re-render). Math stays on marked-katex-extension.
-        marked?.use?.(markedKatex({
-            throwOnError: false,
-            nonStandard: true,
-            output: "mathml",
-            strict: false,
-        }) as unknown as MarkedExtension);
+        const { marked } = await import("marked");
+        // WHY: shared fence `data-language` + KaTeX live in fl.ui `configureMarkdownRendering`.
+        configureMarkdownRendering();
         return async (markdown: string) => {
             return await marked.parse(markdown ?? "");
         };
@@ -872,6 +865,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     mdRoot.innerHTML = sanitized;
                     this.captureOriginalRelRefs(mdRoot);
                     renderTarget.append(outlineNav, mdRoot);
+                    highlightCodeTree(mdRoot);
                     if (this.hasBoundAssets()) void this.applyBoundProvideBlobs(mdRoot);
                     this.applyRenderedLinkBehavior(mdRoot);
                     this.watchVirtualSource(this.sourceUrl);
