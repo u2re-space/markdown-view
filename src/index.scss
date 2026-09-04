@@ -117,8 +117,7 @@
  * Scope roots must include those hosts — otherwise toolbar/layout rules never match.
  * INVARIANT: never style document `html`/`body`/`:root` from this sheet (isolates environment shell).
  */
-@scope (
-    markdown-view,
+@scope (markdown-view,
     md-view,
     .markdown-view,
     cw-view-viewer,
@@ -438,6 +437,75 @@
                 min-block-size: 2.25rem;
                 padding: 0.15rem 0.15rem;
             }
+            }
+
+        .view-viewer__chrome {
+            display: flex;
+            flex-direction: column;
+            flex: 0 0 auto;
+            min-inline-size: 0;
+            inline-size: 100%;
+        }
+
+        .view-viewer__pathbar {
+            --view-picon-fill: var(--color-on-surface, var(--view-fg));
+            --view-picon-fill-hover: var(--color-primary, var(--color-on-surface, var(--view-fg)));
+            --view-picon-fill-active: color-mix(in oklab,
+                    var(--color-on-surface, var(--view-fg)) 82%,
+                    var(--color-primary, #007acc) 18%);
+            --view-picon-fill-disabled: color-mix(in oklab, var(--color-on-surface, var(--view-fg)) 40%, transparent);
+            display: grid;
+            grid-template-columns: max-content minmax(0, 1fr) max-content;
+            align-items: center;
+            gap: 0.25rem;
+            min-block-size: 2.125rem;
+            padding: 0.2rem 0.5rem;
+            background: var(--view-toolbar-bg, var(--color-surface-container-high));
+            border-block-end: 1px solid color-mix(in oklab, var(--color-on-surface, var(--view-fg)) 10%, transparent);
+            box-sizing: border-box;
+            inline-size: 100%;
+            min-inline-size: 0;
+
+            button.view-viewer__btn>ui-icon.view-viewer__toolbar-icon {
+                order: -1;
+                --icon-size: 1.25rem;
+                --icon-padding: 0;
+                --icon-color: var(--color-on-surface, var(--view-fg));
+                pointer-events: none;
+            }
+        }
+
+        .view-viewer__pathbar-left,
+        .view-viewer__pathbar-right {
+            display: flex;
+            flex-wrap: nowrap;
+            align-items: center;
+            gap: 0.15rem;
+        }
+
+        .view-viewer__pathbar-center {
+            display: flex;
+            min-inline-size: 0;
+            inline-size: 100%;
+            margin: 0;
+        }
+
+        .view-viewer__path-input {
+            inline-size: 100%;
+            min-inline-size: 0;
+            min-block-size: 1.75rem;
+            padding: 0.25rem 0.55rem;
+            border: 1px solid color-mix(in oklab, var(--color-on-surface, var(--view-fg)) 16%, transparent);
+            border-radius: 0.4rem;
+            background: var(--color-surface, var(--view-bg));
+            color: var(--color-on-surface, var(--view-fg));
+            font: inherit;
+            font-size: var(--text-sm, 0.8125rem);
+        }
+
+        .view-viewer__path-input:focus {
+            outline: 2px solid color-mix(in oklab, var(--color-primary, #007acc) 45%, transparent);
+            outline-offset: 1px;
         }
 
         .view-viewer__toolbar-center {
@@ -3650,7 +3718,10 @@
             }
 
             .view-viewer__toolbar,
-            [data-viewer-toolbar] {
+            .view-viewer__pathbar,
+            .view-viewer__chrome,
+            [data-viewer-toolbar],
+            [data-viewer-pathbar] {
                 display: none !important;
             }
 

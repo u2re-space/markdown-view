@@ -227,8 +227,7 @@ $_h-sizes: (
     ═══════════════════════════════════════════════════════════════════════════ */
 
 @layer tokens {
-    @scope (
-    markdown-view,
+    @scope (markdown-view,
     md-view,
     .markdown-view,
     .markdown-body,
@@ -274,8 +273,7 @@ $_h-sizes: (
 @layer components {
 
     /* Токены корневого элемента */
-    @scope (
-    markdown-view,
+    @scope (markdown-view,
     md-view,
     .markdown-view,
     .markdown-body,
@@ -318,8 +316,7 @@ $_h-sizes: (
     }
 
     /* ── Корневой markdown-контейнер ── */
-    @scope (
-    markdown-view,
+    @scope (markdown-view,
     md-view,
     .markdown-view,
     .markdown-body,
@@ -1105,8 +1102,7 @@ $_h-sizes: (
     ═══════════════════════════════════════════════════════════════════════════ */
 
 @layer overrides {
-    @scope (
-    markdown-view,
+    @scope (markdown-view,
     md-view,
     .markdown-view,
     .markdown-body,

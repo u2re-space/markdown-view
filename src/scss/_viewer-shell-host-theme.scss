@@ -18,8 +18,7 @@
  */
 
 @mixin markdown-viewer-host-theme-bridge() {
-    @scope (
-        markdown-view,
+    @scope (markdown-view,
         md-view,
         .markdown-view,
         cw-view-viewer,

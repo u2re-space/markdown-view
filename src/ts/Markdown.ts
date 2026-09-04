@@ -3,8 +3,8 @@ import styles from "markdown-view-typography?inline";
 import DOMPurify from 'dompurify';
 import { E, H, provide, defineElement, property } from "@fest-lib/lure";
 import UIElement from "fl-ui/base/UIElement";
-import { highlightCodeTree } from "../../../../projects/fl.ui/src/ui/markdown/highlight";
-import { configureMarkdownRendering, renderSafeMarkdown } from "../../../../projects/fl.ui/src/ui/markdown/render";
+import { highlightCodeTree } from "@fest-lib/fl-ui/markdown/highlight";
+import { configureMarkdownRendering, renderSafeMarkdown } from "@fest-lib/fl-ui/markdown/render";
 
 const SANITIZE_OPTIONS = {
     USE_PROFILES: { html: true, mathMl: true, svg: true },

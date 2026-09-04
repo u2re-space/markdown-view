@@ -23,11 +23,15 @@ import {
 import DOMPurify from 'dompurify';
 import { ensureStyleSheet, reinitializeRegistry } from "@fest-lib/icon";
 import type { BaseViewOptions, ShellContext, ViewLifecycle, ViewOptions, ViewId } from "views/types";
-import type { View } from "shells/types";
+import type { ShellContext as HostShellContext, View } from "shells/types";
 import { ingressStampWasSuperseded } from "com/routing/core/channel-mixin";
+import { requestOpenView } from "com/routing/core/view-api";
+import { ViewRegistry } from "com/routing/core/registry";
 import { createViewState } from "views/types";
 import { createViewConstructor } from "views/registry";
 import { ViewerChannelAction, ExplorerChannelAction } from "views/apis/channel-actions";
+import { createViewerChrome } from "./ts/Toolbar";
+import { toNativeStorageVirtualPath } from "fl-ui/explorer/storage-bridge";
 import { loadSettings } from "com/config/Settings";
 import { sendViewProtocolMessage } from "com/core/UniformViewTransport";
 import { inferCwspSkuFromLocation, publicHrefForSku, shouldHandoffViewToSibling, stashSkuHandoff, takeSkuHandoff } from "com/config/ecosystem-skus";
@@ -64,8 +68,9 @@ const isIngressSourceToken = (value: string): boolean =>
     value === "clipboard" ||
     value === "pending";
 
-import { highlightCodeTree } from "../../../projects/fl.ui/src/ui/markdown/highlight";
-import { configureMarkdownRendering } from "../../../projects/fl.ui/src/ui/markdown/render";
+import { highlightCodeTree } from "@fest-lib/fl-ui/markdown/highlight";
+import { configureMarkdownRendering } from "@fest-lib/fl-ui/markdown/render";
+import type { AppSettings, MarkdownExtensionRule } from "core/other/config/SettingsTypes";
 
 let markedParserPromise: Promise<(markdown: string) => Promise<string>> | null = null;
 
@@ -143,7 +148,11 @@ const getMarkedParser = async (): Promise<(markdown: string) => Promise<string>>
     markedParserPromise = (async () => {
         const { marked } = await import("marked");
         // WHY: shared fence `data-language` + KaTeX live in fl.ui `configureMarkdownRendering`.
-        configureMarkdownRendering();
+        try {
+            configureMarkdownRendering();
+        } catch (error) {
+            console.warn("[ViewerView] markdown configure skipped", error);
+        }
         return async (markdown: string) => {
             return await marked.parse(markdown ?? "");
         };
@@ -168,6 +177,26 @@ interface ViewerState {
 
 const STORAGE_KEY = "rs-viewer-state";
 const DEFAULT_CONTENT = `# This is content`;
+
+const toFetchableMarkdownUrl = (candidate: string): string => {
+    try {
+        const url = new URL(candidate);
+        const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+        if (host !== "github.com") return candidate;
+        const md = /\.(?:md|markdown|mdown|mkd|mkdn|mdtxt|mdtext)(?:$|[?#])/i;
+        const blob = url.pathname.match(/^\/([^/]+)\/([^/]+)\/blob\/(.+)$/i);
+        if (blob && md.test(blob[3])) {
+            return `https://raw.githubusercontent.com/${blob[1]}/${blob[2]}/${blob[3]}`;
+        }
+        const rawPath = url.pathname.match(/^\/([^/]+)\/([^/]+)\/raw\/(.+)$/i);
+        if (rawPath && md.test(rawPath[3])) {
+            return `https://raw.githubusercontent.com/${rawPath[1]}/${rawPath[2]}/${rawPath[3]}`;
+        }
+        return candidate;
+    } catch {
+        return candidate;
+    }
+};
 
 // ============================================================================
 // VIEWER OPTIONS
@@ -225,6 +254,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     /** Single subscription: `affected()` returns a disposer — re-render without dispose stacks callbacks on stale DOM refs. */
     private contentRefSubscriptionDispose: (() => void) | undefined | null = null;
     private renderSeq = 0;
+    /** Bumped on every open (path, drop, pick) so a stale URL fetch cannot restore the loading placeholder. */
+    private openEpoch = 0;
     private stateManager = createViewState<ViewerState>(STORAGE_KEY);
     private _sheet: CSSStyleSheet | null = null;
     private pasteController: AbortController | null = null;
@@ -241,6 +272,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private isViewVisible = false;
     private isPointerInView = false;
     private sourceUrl: string | null = null;
+    private pathHistory: string[] = [];
+    private pathHistoryIndex = -1;
+    private suppressPathHistory = false;
     /** Last `mountPickedDirectory` prefix (`/mounts/md-xxx/`) for ASSETS re-resolve. */
     private boundMountRoot: string | null = null;
     private boundDirectory: FileSystemDirectoryHandle | null = null;
@@ -308,12 +342,12 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     ): void {
         this.disposeContentRefSubscription();
         const dispose = affected(this.contentRef, () => {
-            if (renderTarget && rawTarget) {
+            if (renderTarget) {
                 this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
             }
             this.saveState();
         });
-        this.contentRefSubscriptionDispose = typeof dispose === "function" ? dispose : null;
+        this.contentRefSubscriptionDispose = typeof dispose === "function" ? () => { dispose(); } : null;
     }
 
     lifecycle: ViewLifecycle = {
@@ -343,7 +377,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.contentRef.value = options.initialContent || savedState?.content || DEFAULT_CONTENT;
         this.applyRouteParams(options.params);
         if (!options.initialContent) {
-            const fromParams = (options.params?.content || "").trim();
+            const fromParams = (options.params?.content as string | undefined)?.trim?.();
             if (fromParams) {
                 this.contentRef.value = fromParams;
             }
@@ -370,7 +404,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.syncToolbarDocumentTitle();
 
         this.flushPendingBinaryPreview();
-        if (!this.binaryPreviewActive && renderTarget && rawTarget) {
+        if (!this.binaryPreviewActive && renderTarget) {
             this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
         }
 
@@ -396,7 +430,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
         const renderTarget = this.queryViewerSlotted("[data-render-target]");
         const rawTarget = this.queryViewerSlotted("[data-raw-target]") as HTMLPreElement | null;
-        if (renderTarget && rawTarget) {
+        if (renderTarget) {
             this.subscribeContentRefToCurrentTargets(renderTarget, rawTarget);
             this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
         }
@@ -430,12 +464,12 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
         const renderTarget = prose;
         const rawTarget = pre;
-        this.setupEventHandlers(rawTarget);
+        this.setupEventHandlers(rawTarget || undefined);
         this.syncOutlineToolbarState();
         this.syncToolbarDocumentTitle();
 
         this.flushPendingBinaryPreview();
-        if (!this.binaryPreviewActive && renderTarget && rawTarget) {
+        if (!this.binaryPreviewActive && renderTarget) {
             this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
         }
 
@@ -464,12 +498,16 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
         this.contentRef.value = content;
         this.syncToolbarDocumentTitle();
+        this.syncOpenedPath(this.sourceUrl);
+        /* WHY: `affected(contentRef)` can miss a write (same string, async subscribe). Drop/path must paint now. */
+        this.repaintMarkdown();
     }
 
     private repaintMarkdown(): void {
         const renderTarget = this.queryViewerSlotted("[data-render-target]");
+        if (!renderTarget) return;
         const rawTarget = this.queryViewerSlotted("[data-raw-target]") as HTMLPreElement | null;
-        if (renderTarget) this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
+        this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
     }
 
     /**
@@ -568,74 +606,16 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private createViewerShellElement(): HTMLElement {
-        return H`
-            <div class="cw-view-viewer-shell">
-                <div class="view-viewer">
-                    <div
-                        class="view-viewer__toolbar"
-                        data-viewer-toolbar
-                        role="toolbar"
-                        aria-label="Markdown document actions"
-                    >
-                        <div class="view-viewer__toolbar-left" role="group" aria-label="Document">
-                            <button class="view-viewer__btn" data-action="open" type="button" title="Open file">
-                                <ui-icon class="view-viewer__toolbar-icon" icon="folder-open" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                                <span>Open</span>
-                            </button>
-                            <button class="view-viewer__btn" data-action="bind-assets" type="button" title="Bind folder for images and other relative assets">
-                                <ui-icon class="view-viewer__toolbar-icon" icon="folder" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                                <span>Assets</span>
-                            </button>
-                            <button class="view-viewer__btn" data-action="toggle-raw" type="button" title="Toggle raw/rendered view">
-                                <ui-icon class="view-viewer__toolbar-icon" icon="code" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                                <span>Raw</span>
-                            </button>
-                            <button class="view-viewer__btn" data-action="copy" type="button" title="Copy raw content">
-                                <ui-icon class="view-viewer__toolbar-icon" icon="copy" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                                <span>Copy</span>
-                            </button>
-                            <button class="view-viewer__btn" data-action="paste" type="button" title="Paste from clipboard (mobile-friendly)" aria-label="Paste from clipboard">
-                                <ui-icon class="view-viewer__toolbar-icon" icon="clipboard-text" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                                <span>Paste</span>
-                            </button>
-                            <button class="view-viewer__btn" data-action="download" type="button" title="Download as markdown">
-                                <ui-icon class="view-viewer__toolbar-icon" icon="download" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                                <span>Download</span>
-                            </button>
-                        </div>
-                        <div class="view-viewer__toolbar-center" role="presentation">
-                            <span class="view-viewer__toolbar-title" data-viewer-toolbar-title></span>
-                        </div>
-                        <div class="view-viewer__toolbar-right" role="group" aria-label="Output and workspace">
-                            <button class="view-viewer__btn" data-action="attach" type="button" title="Attach to Work Center">
-                                <ui-icon class="view-viewer__toolbar-icon" icon="paperclip" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                                <span>Attach</span>
-                            </button>
-                            <button class="view-viewer__btn" data-action="open-style-settings" type="button" title="Markdown styling, modules, plugins">
-                                <ui-icon class="view-viewer__toolbar-icon" icon="paint-roller" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                                <span>Style</span>
-                            </button>
-                            <button class="view-viewer__btn" data-action="copy-rendered" type="button" title="Copy rendered text">
-                                <ui-icon class="view-viewer__toolbar-icon" icon="text-t" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                                <span>Copy text</span>
-                            </button>
-                            <button class="view-viewer__btn" data-action="export-docx" type="button" title="Export as DOCX">
-                                <ui-icon class="view-viewer__toolbar-icon" icon="file-doc" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                                <span>DOCX</span>
-                            </button>
-                            <button class="view-viewer__btn" data-action="print" type="button" title="Print content">
-                                <ui-icon class="view-viewer__toolbar-icon" icon="printer" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                                <span>Print</span>
-                            </button>
-                        </div>
-                    </div>
-                    <div class="view-viewer__content" data-viewer-content>
-                        <pre class="markdown-viewer-raw" data-raw-target aria-label="Raw content" hidden></pre>
-                        <div class="cw-view-viewer__prose markdown-body markdown-viewer-content result-content" data-render-target data-cw-viewer-prose></div>
-                    </div>
-                </div>
+        const chrome = createViewerChrome();
+        const content = H`
+            <div class="view-viewer__content" data-viewer-content>
+                <pre class="markdown-viewer-raw" data-raw-target aria-label="Raw content" hidden></pre>
+                <div class="cw-view-viewer__prose markdown-body markdown-viewer-content result-content" data-render-target data-cw-viewer-prose></div>
             </div>
         ` as HTMLElement;
+        const viewer = H`<div class="view-viewer"></div>` as HTMLElement;
+        viewer.append(chrome, content);
+        return H`<div class="cw-view-viewer-shell">${viewer}</div>` as HTMLElement;
     }
 
     private adoptViewerStylesIntoShadowRoot(shadow: ShadowRoot): void {
@@ -776,7 +756,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.syncOutlineToolbarState();
     }
 
-    private renderMarkdown(content: string, renderTarget: HTMLElement, rawTarget: HTMLPreElement): void {
+    private renderMarkdown(content: string, renderTarget: HTMLElement, rawTarget?: HTMLPreElement | null): void {
         if (!renderTarget || this.binaryPreviewActive) return;
         const seq = ++this.renderSeq;
 
@@ -865,7 +845,11 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     mdRoot.innerHTML = sanitized;
                     this.captureOriginalRelRefs(mdRoot);
                     renderTarget.append(outlineNav, mdRoot);
-                    highlightCodeTree(mdRoot);
+                    try {
+                        highlightCodeTree(mdRoot);
+                    } catch (error) {
+                        console.warn("[ViewerView] code highlight skipped", error);
+                    }
                     if (this.hasBoundAssets()) void this.applyBoundProvideBlobs(mdRoot);
                     this.applyRenderedLinkBehavior(mdRoot);
                     this.watchVirtualSource(this.sourceUrl);
@@ -900,6 +884,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private normalizeSourceUrl(source?: string | null): string | null {
         const raw = (source || "").trim();
         if (!raw) return null;
+        const native = toNativeStorageVirtualPath(raw);
+        if (native) return native;
         if (isVirtualFsPath(raw)) {
             return raw.startsWith("/") ? raw : `/${raw}`;
         }
@@ -969,6 +955,24 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private applyRouteParams(params?: Record<string, unknown>): void {
+        const bootBag = (() => {
+            try {
+                const bag = (globalThis as unknown as Record<string, unknown>).__CWSP_CRX_MD_BOOT__;
+                if (!bag || typeof bag !== "object") return null;
+                delete (globalThis as unknown as Record<string, unknown>).__CWSP_CRX_MD_BOOT__;
+                return bag as { content?: string; src?: string; filename?: string };
+            } catch {
+                return null;
+            }
+        })();
+        if (bootBag?.content?.trim()) {
+            this.contentRef.value = bootBag.content;
+            if (bootBag.filename) this.options.filename = bootBag.filename;
+            if (bootBag.src) {
+                this.sourceUrl = this.normalizeSourceUrl(bootBag.src);
+                this.options.source = bootBag.src;
+            }
+        }
         const handed = takeSkuHandoff("viewer", "document");
         if (handed?.content?.trim()) {
             this.contentRef.value = handed.content;
@@ -1013,9 +1017,17 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 console.warn("[Viewer] Failed to restore detached payload:", error);
             }
         }
-        const sourceParam = params.source || params.src || params.path || params.url;
+        const hashSource = (() => {
+            try {
+                const raw = decodeURIComponent(String(globalThis.location?.hash || "").replace(/^#/, "")).trim();
+                return /^https?:\/\//i.test(raw) ? raw : "";
+            } catch {
+                return "";
+            }
+        })();
+        const sourceParam = params.source || params.src || params.path || params.url || hashSource;
         if (sourceParam) {
-            const sp = String(sourceParam).trim();
+            const sp = toFetchableMarkdownUrl(String(sourceParam).trim());
             /*
              * WHY: Inline open-link used to route http(s) into this markdown viewer, which
              * fetches the page and tries to render HTML as markdown (GitHub, etc.).
@@ -1058,21 +1070,21 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 typeof globalThis.location !== "undefined" &&
                 globalThis.location.protocol === "chrome-extension:";
             if (!(isExt && /^file:/i.test(sp))) {
-                this.sourceUrl = this.normalizeSourceUrl(sourceParam);
-                this.options.source = sourceParam as string | undefined;
+                this.sourceUrl = this.normalizeSourceUrl(sp);
+                this.options.source = sp;
             }
         }
         const filenameParam = params.filename || params.name;
         if (filenameParam) {
-            this.options.filename = filenameParam;
+            this.options.filename = String(filenameParam);
         }
         const contentParam = String(params.content || "");
         if (contentParam.trim()) {
             this.contentRef.value = contentParam;
         } else if (sourceParam) {
-            const src = String(sourceParam).trim();
+            const src = toNativeStorageVirtualPath(String(sourceParam).trim()) || String(sourceParam).trim();
             /* WHY: `/assets/` is not OPFS. provide() fetches same-origin; without this the window stayed on DEFAULT_CONTENT. */
-            if (isVirtualFsPath(src) || /^\/assets(?:\/|$)/i.test(src)) {
+            if (isVirtualFsPath(src) || /^\/assets(?:\/|$)/i.test(src) || /^\/(?:sdcard|saf)(?:\/|$)/i.test(src)) {
                 void (async () => {
                     if (/^\/(?:sdcard|saf)(?:\/|$)/i.test(src)) {
                         try {
@@ -1082,7 +1094,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                             /* web */
                         }
                     }
-                    let file = await provide(src).catch(() => null);
+                    let file = asProvidedFile(await provide(src).catch(() => null));
                     if (!file && /^\/(?:sdcard|saf)(?:\/|$)/i.test(src)) {
                         try {
                             const { readNativeStorageFile } = await import("fl-ui/explorer/storage-bridge");
@@ -1091,7 +1103,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                             file = null;
                         }
                     }
-                    if (!file) {
+                    if (!(file instanceof File)) {
                         if (/^\/assets(?:\/|$)/i.test(src)) {
                             void this.openMarkdownFromUrl(src, filenameParam ? String(filenameParam) : undefined);
                         }
@@ -1102,10 +1114,18 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                         filename: filenameParam ? String(filenameParam) : file.name
                     });
                 })();
+            } else if (/^https?:\/\//i.test(src) && /\.(?:md|markdown|txt|mdx)(?:$|[?#])/i.test(src)) {
+                /* WHY: ?src= used to set sourceUrl and never fetch; GitHub raw then stayed on DEFAULT_CONTENT. */
+                const already = String(this.contentRef.value || "").trim();
+                const needsFetch = !already || already === DEFAULT_CONTENT || already.startsWith("# No content");
+                if (needsFetch) {
+                    void this.openMarkdownFromUrl(src, filenameParam ? String(filenameParam) : undefined);
+                }
             }
         }
         if (this.element) {
             this.syncToolbarDocumentTitle();
+            this.syncOpenedPath(this.sourceUrl);
         }
     }
 
@@ -1258,7 +1278,14 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         const hasScheme = /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(value);
         if (hasScheme || value.startsWith("//")) {
             try {
-                return new URL(value, globalThis.location.href).toString();
+                const absolute = new URL(value, globalThis.location.href).toString();
+                if (
+                    /^file:/i.test(absolute) &&
+                    globalThis.location?.protocol === "chrome-extension:"
+                ) {
+                    return null;
+                }
+                return absolute;
             } catch {
                 return value;
             }
@@ -1280,7 +1307,14 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             // WHY: resolving `./assets/…` against the PWA origin writes
             // `https://md.u2re.space/assets/…` (404) and blocks later bind.
             if (base.origin === globalThis.location.origin) return value;
-            return new URL(value, base).toString();
+            const absolute = new URL(value, base).toString();
+            if (
+                /^file:/i.test(absolute) &&
+                globalThis.location?.protocol === "chrome-extension:"
+            ) {
+                return null;
+            }
+            return absolute;
         } catch {
             return value;
         }
@@ -1303,14 +1337,15 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private async fetchMarkdownFromUrl(source: string): Promise<string | null> {
-        const src = (source || "").trim();
+        const src = toFetchableMarkdownUrl((source || "").trim());
         if (!src) return null;
         if (/^file:/i.test(src)) {
             // file:// is a unique origin; direct fetch from viewer context is blocked in Chromium.
             return null;
         }
         try {
-            const response = await fetch(src, { credentials: "include", cache: "no-store" });
+            /* WHY: GitHub raw sends ACAO *; credentials:include fails CORS from chrome-extension pages. */
+            const response = await fetch(src, { credentials: "omit", cache: "no-store" });
             if (!response.ok) return null;
             const text = await response.text();
             const lowered = (text || "").trimStart().toLowerCase();
@@ -1325,49 +1360,100 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     public async openMarkdownFromUrl(source: string, filename?: string): Promise<boolean> {
+        const epoch = ++this.openEpoch;
         const renderTarget = this.queryViewerSlotted("[data-render-target]");
         if (renderTarget) {
             renderTarget.setAttribute("aria-busy", "true");
             renderTarget.setAttribute("data-md-state", "fetching");
             renderTarget.innerHTML = `<div class="view-viewer__md-loading" role="status">Loading document…</div>`;
         }
+        const stillThisOpen = (): boolean => epoch === this.openEpoch;
+        const restoreIfStillFetching = () => {
+            if (!stillThisOpen()) return;
+            this.repaintMarkdown();
+        };
 
+        let opened = false;
+        try {
         const normalizedSource = this.normalizeSourceUrl(source);
-        if (!normalizedSource) return false;
+        if (!normalizedSource) {
+            return false;
+        }
+        if (/^\/(?:sdcard|saf)(?:\/|$)/i.test(normalizedSource)) {
+            /* WHY: provide() re-encodes /sdcard/ and storage:read+Settings mid-await left Loading forever. */
+            try {
+                const bridge = await import("fl-ui/explorer/storage-bridge");
+                await bridge.ensureNativeStorageProvide();
+                const file = await bridge.readNativeStorageFile(normalizedSource, { requestAccess: false });
+                if (!stillThisOpen()) return false;
+                if (!(file instanceof File)) {
+                    if (bridge.isNativeStorageAvailable()) {
+                        const status = await bridge.getAllFilesStatus();
+                        if (!status.allFilesAccess) {
+                            void bridge.requestAllFilesAccess();
+                            this.showMessage("Allow all-files access, then Go again");
+                            return false;
+                        }
+                    }
+                    this.showMessage("Could not open that path");
+                    return false;
+                }
+                const ok = await this.paintSharedIngressFile(file, filename || file.name, normalizedSource);
+                if (!stillThisOpen()) return false;
+                if (ok) {
+                    this.syncOpenedPath(normalizedSource);
+                    this.showMessage(filename ? `Opened ${filename}` : "Opened markdown link");
+                    opened = true;
+                    return true;
+                }
+                return false;
+            } catch {
+                return false;
+            }
+        }
         if (isVirtualFsPath(normalizedSource)) {
-            if (/^\/(?:sdcard|saf)(?:\/|$)/i.test(normalizedSource)) {
-                try {
-                    const { ensureNativeStorageProvide } = await import("fl-ui/explorer/storage-bridge");
-                    await ensureNativeStorageProvide();
-                } catch {
-                    /* web */
-                }
+            let file = asProvidedFile(await provide(normalizedSource).catch(() => null));
+            if (!stillThisOpen()) return false;
+            if (!(file instanceof File)) {
+                return false;
             }
-            let file = await provide(normalizedSource).catch(() => null);
-            if (!file && /^\/(?:sdcard|saf)(?:\/|$)/i.test(normalizedSource)) {
-                try {
-                    const { readNativeStorageFile } = await import("fl-ui/explorer/storage-bridge");
-                    file = await readNativeStorageFile(normalizedSource);
-                } catch {
-                    file = null;
-                }
-            }
-            if (!file) return false;
             const ok = await this.ingestOpenedFile(file, {
                 virtualPath: normalizedSource,
                 filename: filename || file.name
             });
-            if (ok) this.showMessage(filename ? `Opened ${filename}` : "Opened markdown link");
-            return ok;
+            if (!stillThisOpen()) return false;
+            if (ok) {
+                this.repaintMarkdown();
+                this.showMessage(filename ? `Opened ${filename}` : "Opened markdown link");
+                opened = true;
+                return true;
+            }
+            return false;
         }
         if (/^blob:/i.test(normalizedSource) || /^blob:/i.test(source)) {
-            return this.openMarkdownBlob(source, filename);
+            const ok = await this.openMarkdownBlob(source, filename);
+            if (!stillThisOpen()) return false;
+            if (ok) {
+                this.repaintMarkdown();
+                opened = true;
+                return true;
+            }
+            return false;
         }
         const markdown = await this.fetchMarkdownFromUrl(normalizedSource);
-        if (markdown === null) return false;
+        if (!stillThisOpen()) return false;
+        if (markdown === null) {
+            return false;
+        }
         this.ingestOpenedMarkdownBody(markdown, filename, normalizedSource);
+        this.syncOpenedPath(normalizedSource);
+        this.repaintMarkdown();
         this.showMessage(filename ? `Opened ${filename}` : "Opened markdown link");
+        opened = true;
         return true;
+        } finally {
+            if (!opened && stillThisOpen()) restoreIfStillFetching();
+        }
     }
 
     private async openMarkdownBlob(blobUrl: string, relOrName?: string): Promise<boolean> {
@@ -1392,8 +1478,11 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private setupEventHandlers(rawElement?: HTMLPreElement): void {
         if (!this.element) return;
 
-        const toolbar = this.element.querySelector("[data-viewer-toolbar]");
-        const content = this.element.querySelector("[data-viewer-content]");
+        const toolbar =
+            this.element.querySelector("[data-viewer-chrome]") ||
+            this.element.querySelector("[data-viewer-toolbar]");
+        const pathForm = this.element.querySelector("[data-viewer-path-form]") as HTMLFormElement | null;
+        const content = this.element.querySelector("[data-viewer-content]") as HTMLElement | null;
         const shell =
             this.element.classList.contains("cw-view-viewer-shell") ? this.element : null;
         const renderTarget = this.queryViewerSlotted("[data-render-target]");
@@ -1407,6 +1496,15 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
             const action = button.dataset.action;
             switch (action) {
+                case "go-back":
+                    void this.goPathHistoryBack();
+                    break;
+                case "refresh-path":
+                    void this.refreshPathFromBar();
+                    break;
+                case "go-path":
+                    void this.goPathFromBar();
+                    break;
                 case "open":
                     this.handleOpen();
                     break;
@@ -1451,6 +1549,32 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     void this.attachCurrentContentToWorkcenter();
                     break;
             }
+        });
+
+        pathForm?.addEventListener("submit", (e) => {
+            e.preventDefault();
+            void this.goPathFromBar();
+        });
+
+        const pathBar =
+            this.element.querySelector("[data-viewer-pathbar]") ||
+            this.queryViewerSlotted("[data-viewer-pathbar]");
+        const acceptPathBarFile = (e: DragEvent) => {
+            const types = e.dataTransfer?.types;
+            const listed = types ? Array.from(types) : [];
+            if (listed.length && !listed.some((type) => type.toLowerCase() === "files")) return false;
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+            return true;
+        };
+        pathBar?.addEventListener("dragover", (e) => {
+            if (acceptPathBarFile(e as DragEvent)) (shell ?? content)?.classList.add("dragover");
+        });
+        pathBar?.addEventListener("drop", (e) => {
+            if (!acceptPathBarFile(e as DragEvent)) return;
+            (shell ?? content)?.classList.remove("dragover");
+            this.handleFileDrop(e as DragEvent);
         });
 
         // Setup drag and drop (shell includes toolbar + raw + slotted markdown)
@@ -1535,6 +1659,76 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 }
             });
         });
+    }
+
+    private pathInputEl(): HTMLInputElement | null {
+        return this.queryViewerSlotted("[data-viewer-path]") as HTMLInputElement | null;
+    }
+
+    private pathInputValue(): string {
+        return String(this.pathInputEl()?.value || "").trim();
+    }
+
+    private syncPathBackButton(): void {
+        const btn = this.queryViewerSlotted('[data-action="go-back"]') as HTMLButtonElement | null;
+        if (btn) btn.disabled = this.pathHistoryIndex <= 0;
+    }
+
+    private syncOpenedPath(source?: string | null): void {
+        const next = String(source || this.sourceUrl || "").trim();
+        const input = this.pathInputEl();
+        if (input && next && input.value !== next) input.value = next;
+        if (this.suppressPathHistory || !next) {
+            this.syncPathBackButton();
+            return;
+        }
+        if (this.pathHistory[this.pathHistoryIndex] === next) {
+            this.syncPathBackButton();
+            return;
+        }
+        this.pathHistory = this.pathHistory.slice(0, this.pathHistoryIndex + 1);
+        this.pathHistory.push(next);
+        this.pathHistoryIndex = this.pathHistory.length - 1;
+        this.syncPathBackButton();
+    }
+
+    private async goPathFromBar(): Promise<void> {
+        const raw = this.pathInputValue();
+        if (!raw) {
+            this.showMessage("Enter a path or URL");
+            return;
+        }
+        const native = toNativeStorageVirtualPath(raw);
+        const candidate = native || (/^(?:[a-z][a-z\d+\-.]*:|\/)/i.test(raw) ? raw : `https://${raw}`);
+        const src = native || toFetchableMarkdownUrl(candidate);
+        const ok = await this.openMarkdownFromUrl(src);
+        if (!ok && !native) this.showMessage("Could not open that path or URL");
+    }
+
+    private async refreshPathFromBar(): Promise<void> {
+        const src = this.pathInputValue() || this.sourceUrl;
+        if (src) {
+            const ok = await this.openMarkdownFromUrl(src);
+            if (!ok) this.showMessage("Refresh failed");
+            return;
+        }
+        this.onRefresh();
+    }
+
+    private async goPathHistoryBack(): Promise<void> {
+        if (this.pathHistoryIndex <= 0) return;
+        this.suppressPathHistory = true;
+        this.pathHistoryIndex -= 1;
+        const src = this.pathHistory[this.pathHistoryIndex] || "";
+        try {
+            if (src) {
+                const ok = await this.openMarkdownFromUrl(src);
+                if (!ok) this.showMessage("Could not open previous document");
+            }
+        } finally {
+            this.suppressPathHistory = false;
+            this.syncOpenedPath(src);
+        }
     }
 
     private handleOpen(): void {
@@ -1754,7 +1948,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     globalThis.setTimeout(() => resolve({ ok: false, error: "Clipboard timeout" }), 3500)
                 )
             ]) as { ok: false; error: string } | undefined;
-            if (!result?.ok) throw new Error(result.error || "Clipboard write failed");
+            if (!result?.ok) throw new Error(result?.error || "Clipboard write failed");
             this.showMessage("Copied rendered text to clipboard");
         } catch {
             this.showMessage("Failed to copy rendered text");
@@ -1858,7 +2052,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             data: payload
         };
 
-        if (this.shellContext && ["window", "tabbed", "environment"].includes(this.shellContext.shellId)) {
+        if (this.shellContext && ["window", "tabbed", "environment"].includes(this.shellContext.shellId as string)) {
             try {
                 // WHY: window-like shells create fresh per-process view instances, so
                 // attach data must travel with the open request instead of going
@@ -1911,7 +2105,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         try {
             const workcenter =
                 ViewRegistry.getLoaded("workcenter") ||
-                await ViewRegistry.load("workcenter", { shellContext: this.shellContext });
+                await ViewRegistry.load("workcenter", { shellContext: this.shellContext as HostShellContext | undefined });
             if (workcenter?.handleMessage) {
                 await workcenter.handleMessage({
                     ...initialMessage,
@@ -1929,7 +2123,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
     private handleOpenStyleSettings(): void {
         try {
-            this.shellContext?.navigate("settings", {
+            this.shellContext?.navigate?.("settings", {
                 tab: "markdown",
                 focus: "style"
             });
@@ -1946,7 +2140,13 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
     /** True when this viewer should own global file drop / paste (demo or active shell tab). */
     private viewerAcceptsGlobalInput(): boolean {
-        const current = this.shellContext?.navigationState?.currentView;
+        const nav = this.shellContext
+            ? (this.shellContext as Record<string, unknown>).navigationState
+            : undefined;
+        const current =
+            nav && typeof nav === "object" && "currentView" in nav
+                ? String((nav as { currentView?: unknown }).currentView || "") || undefined
+                : undefined;
         if (current && current !== this.id) {
             /* WHY: md.u2re.space can keep a stale `home` nav id while the viewer is the painted surface. */
             if (inferCwspSkuFromLocation() !== "document") return false;
@@ -1968,6 +2168,10 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 const node = e.target;
                 const el =
                     node instanceof Element ? node : node instanceof Node ? node.parentElement : null;
+                /* WHY: Path bar is an Explorer-style address field — file drops must open, not type. */
+                if (el?.closest("[data-viewer-pathbar], [data-viewer-path], [data-viewer-path-form], [data-viewer-chrome]")) {
+                    return true;
+                }
                 if (el?.closest("input, textarea, select, [contenteditable='true']")) return false;
                 return true;
             };
@@ -1996,6 +2200,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
     private async ingestDroppedFiles(dt: DataTransfer | null | undefined): Promise<void> {
         if (!dt) return;
+        this.openEpoch += 1;
         const items = Array.from(dt.items || []);
         const files: File[] = [];
         let directoryHandle: FileSystemDirectoryHandle | null = null;
@@ -2342,7 +2547,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             this.showMessage(`Unsupported file type for viewer: ${file.name || file.type || "binary file"}`);
             return false;
         }
-        const settings = await loadSettings().catch(() => null);
+        const settings: AppSettings = loadSettings();
         rememberOpenPolicyFromSettings(settings);
         const kind = classifyOpenKind(file);
         const sink = resolveOpenPolicy(
@@ -2514,7 +2719,11 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         const target = e.target as HTMLElement | null;
         if (!target) return false;
 
-        if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) {
+        if (target.closest("[data-viewer-path]")) {
+            const items = e.clipboardData?.items;
+            const hasFile = !!items && Array.from(items).some((item) => item.kind === "file");
+            if (!hasFile) return false;
+        } else if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) {
             return false;
         }
 
@@ -2835,7 +3044,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             const printChunks: string[] = [];
             for (const name of names) {
                 const file = await provide(`/user/styles/${name}`).catch(() => null);
-                const cssText = file ? await file.text().catch(() => "") : "";
+                const cssText = file instanceof File ? await file.text().catch(() => "") : "";
                 if (!cssText.trim()) continue;
                 if (name.toLowerCase().endsWith(".print.css")) {
                     printChunks.push(`/* ${name} */\n${cssText}`);
@@ -3149,11 +3358,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private onRefresh(): void {
-        const renderTarget = this.queryViewerSlotted("[data-render-target]");
-        const rawTarget = this.queryViewerSlotted("[data-raw-target]") as HTMLPreElement | null;
-        if (renderTarget && rawTarget) {
-            this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
-        }
+        this.repaintMarkdown();
     }
 
     // ========================================================================

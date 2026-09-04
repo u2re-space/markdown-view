@@ -14,6 +14,7 @@
         "./src/**/*.jsx"
     ],
     "compilerOptions": {
+        "rootDir": "../..",
         "outDir": "./dist/",
         "paths": {
             "@phosphor-icons/core/assets/*": [
@@ -55,6 +56,15 @@
             "@fest-lib/fl-ui": [
                 "../../projects/fl.ui/src/index.ts"
             ],
+            "fl-ui/*": [
+                "../../projects/fl.ui/src/ui/*"
+            ],
+            "@fest-lib/fl-ui/markdown/highlight": [
+                "../../projects/fl.ui/src/ui/markdown/highlight.ts"
+            ],
+            "@fest-lib/fl-ui/markdown/render": [
+                "../../projects/fl.ui/src/ui/markdown/render.ts"
+            ],
             "@fest-lib/image": [
                 "../../projects/image.ts/src/index.ts"
             ],
@@ -79,7 +89,11 @@
             "boot/*": ["../shared/src/boot/*"],
             "views/*": ["../shared/views/*"],
             "shells/*": ["../shared/shells/*"],
+            "core/document/DocxExport": ["../shared/src/other/document/DocxExport.ts"],
             "core/*": ["../shared/src/*"],
+            "com/core/UniformViewTransport": ["../shared/src/routing/channel/UniformViewTransport.ts"],
+            "com/config/open-policy": ["../shared/src/other/config/open-policy.ts"],
+            "com/config/ecosystem-skus": ["../shared/src/other/config/ecosystem-skus.ts"],
             "com/*": ["../shared/src/*"],
             "shared/*": ["../shared/src/*"],
             "@shared/*": ["../shared/*"],

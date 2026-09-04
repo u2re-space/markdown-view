@@ -1,8 +1,57 @@
 /**
  * Single source for markdown viewer toolbar chrome (standalone + shadow/slot modes).
+ * FIND:file-markdown
  */
 
 import { H } from "@fest-lib/lure";
+
+export function createViewerPathBar(): HTMLElement {
+    return H`
+        <div
+            class="view-viewer__pathbar"
+            data-viewer-pathbar
+            role="navigation"
+            aria-label="Document path"
+        >
+            <div class="view-viewer__pathbar-left" role="group" aria-label="History">
+                <button class="view-viewer__btn" data-action="go-back" type="button" title="Back" disabled>
+                    <ui-icon class="view-viewer__toolbar-icon" icon="arrow-left" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>Back</span>
+                </button>
+                <button class="view-viewer__btn" data-action="refresh-path" type="button" title="Reload this document">
+                    <ui-icon class="view-viewer__toolbar-icon" icon="arrow-clockwise" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>Refresh</span>
+                </button>
+            </div>
+            <form class="view-viewer__pathbar-center" data-viewer-path-form>
+                <input
+                    class="view-viewer__path-input"
+                    data-viewer-path
+                    name="address"
+                    type="text"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="Path or URL…"
+                    aria-label="Document path or URL"
+                />
+            </form>
+            <div class="view-viewer__pathbar-right" role="group" aria-label="Open">
+                <button class="view-viewer__btn" data-action="go-path" type="button" title="Load path or URL">
+                    <ui-icon class="view-viewer__toolbar-icon" icon="arrow-right" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>Go</span>
+                </button>
+                <button class="view-viewer__btn" data-action="open" type="button" title="Open file">
+                    <ui-icon class="view-viewer__toolbar-icon" icon="folder-open" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>Open</span>
+                </button>
+                <button class="view-viewer__btn" data-action="bind-assets" type="button" title="Bind folder for images and other relative assets">
+                    <ui-icon class="view-viewer__toolbar-icon" icon="folder" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>Assets</span>
+                </button>
+            </div>
+        </div>
+    ` as HTMLElement;
+}
 
 export function createViewerToolbar(): HTMLElement {
     return H`
@@ -13,14 +62,6 @@ export function createViewerToolbar(): HTMLElement {
             aria-label="Markdown document actions"
         >
             <div class="view-viewer__toolbar-left" role="group" aria-label="Document">
-                <button class="view-viewer__btn" data-action="open" type="button" title="Open file">
-                    <ui-icon class="view-viewer__toolbar-icon" icon="folder-open" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                    <span>Open</span>
-                </button>
-                <button class="view-viewer__btn" data-action="bind-assets" type="button" title="Bind folder for images and other relative assets">
-                    <ui-icon class="view-viewer__toolbar-icon" icon="folder" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                    <span>Assets</span>
-                </button>
                 <button class="view-viewer__btn" data-action="toggle-raw" type="button" title="Toggle raw/rendered view">
                     <ui-icon class="view-viewer__toolbar-icon" icon="code" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
                     <span>Raw</span>
@@ -67,6 +108,13 @@ export function createViewerToolbar(): HTMLElement {
     ` as HTMLElement;
 }
 
+/** Path row + action row. Explorer-like address chrome lives on the first row. */
+export function createViewerChrome(): HTMLElement {
+    const chrome = H`<div class="view-viewer__chrome" data-viewer-chrome></div>` as HTMLElement;
+    chrome.append(createViewerPathBar(), createViewerToolbar());
+    return chrome;
+}
+
 const TOOLBAR_TAG = "cw-markdown-toolbar-frame";
 const TOOLBAR_SLOT = "toolbar";
 
@@ -77,13 +125,13 @@ export class MarkdownToolbarFrameElement extends HTMLElement {
         self.dataset.ready = "1";
         self.classList?.add?.("cw-markdown-toolbar-frame");
 
-        let toolbar = self.querySelector(`:scope > [slot="${TOOLBAR_SLOT}"][data-viewer-toolbar]`) as HTMLElement | null;
-        if (!toolbar) {
-            toolbar = createViewerToolbar();
-            toolbar.slot = TOOLBAR_SLOT;
-            self.appendChild(toolbar);
-        } else if (!toolbar.slot) {
-            toolbar.slot = TOOLBAR_SLOT;
+        let chrome = self.querySelector(`:scope > [slot="${TOOLBAR_SLOT}"][data-viewer-chrome]`) as HTMLElement | null;
+        if (!chrome) {
+            chrome = createViewerChrome();
+            chrome.slot = TOOLBAR_SLOT;
+            self.appendChild(chrome);
+        } else if (!chrome.slot) {
+            chrome.slot = TOOLBAR_SLOT;
         }
 
         const shadow = self.shadowRoot ?? self.attachShadow({ mode: "open" });
@@ -131,4 +179,3 @@ export function ensureMarkdownToolbarFrame(): string {
     }
     return TOOLBAR_TAG;
 }
-
