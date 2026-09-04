@@ -68,7 +68,7 @@ const isIngressSourceToken = (value: string): boolean =>
     value === "clipboard" ||
     value === "pending";
 
-import { highlightCodeTree } from "@fest-lib/fl-ui/markdown/highlight";
+import { attachCodeHighlight, highlightCodeTree, languageFromFilename } from "@fest-lib/fl-ui/markdown/highlight";
 import { configureMarkdownRendering } from "@fest-lib/fl-ui/markdown/render";
 import type { AppSettings, MarkdownExtensionRule } from "core/other/config/SettingsTypes";
 
@@ -781,11 +781,23 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             const c = content || "";
             const assignRaw = (): void => {
                 if (seq !== this.renderSeq) return;
-                if (c.length > VIEWER_RAW_DISPLAY_MAX_CHARS) {
-                    rawTarget.textContent =
-                        `${c.slice(0, VIEWER_RAW_DISPLAY_MAX_CHARS)}\n\n… [truncated — open in editor for full source]`;
-                } else {
-                    rawTarget.textContent = c;
+                const text = c.length > VIEWER_RAW_DISPLAY_MAX_CHARS
+                    ? `${c.slice(0, VIEWER_RAW_DISPLAY_MAX_CHARS)}\n\n… [truncated — open in editor for full source]`
+                    : c;
+                /* WHY: `</>` raw mode was a bare <pre> — highlight.js only paints pre > code. */
+                let code = rawTarget.querySelector(":scope > code");
+                if (!(code instanceof HTMLElement)) {
+                    code = document.createElement("code");
+                    rawTarget.replaceChildren(code);
+                }
+                code.textContent = text;
+                const lang = languageFromFilename(this.options.filename || this.sourceUrl || "");
+                try {
+                    /* WHY: raw </> is the whole document — a gutter overlay + RO
+                     * rewrites line-height while the <pre> is hidden, then pumps height every frame. */
+                    attachCodeHighlight(code, { language: lang, lineNumbers: false });
+                } catch (error) {
+                    console.warn("[ViewerView] raw highlight skipped", error);
                 }
             };
             if (c.length > VIEWER_RAW_TEXTCONTENT_DEFER_CHARS) {

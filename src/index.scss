@@ -765,6 +765,7 @@
         /* Prose chrome: comfortable inset + large first heading (reference layout). */
         .cw-view-viewer-shell .markdown-viewer-raw,
         .cw-view-viewer-shell pre[data-raw-target] {
+            position: relative;
             margin: 0;
             padding: var(--view-padding);
             color: var(--view-fg);
@@ -774,8 +775,21 @@
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
             font-size: 0.8125rem;
             line-height: 1.5;
-            white-space: pre-wrap;
-            word-break: break-word;
+            /* WHY: pre-wrap on a phone wraps source but not overlay paint — selection drifts by lines. */
+            white-space: pre;
+            word-break: normal;
+            overflow-wrap: normal;
+            overflow-x: auto;
+
+            > code {
+                display: block;
+                font: inherit;
+                line-height: inherit;
+                white-space: inherit;
+                word-break: inherit;
+                overflow-wrap: inherit;
+                color: inherit;
+            }
         }
 
         .cw-view-viewer-shell .cw-view-viewer__prose.markdown-body,
