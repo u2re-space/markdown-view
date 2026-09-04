@@ -2528,6 +2528,7 @@
             gap: var(--space-lg);
             max-block-size: none;
             overflow: auto;
+            z-index: 99;
         }
 
         .history-header {
