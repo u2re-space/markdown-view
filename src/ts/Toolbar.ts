@@ -29,6 +29,7 @@ export function createViewerPathBar(): HTMLElement {
                     data-viewer-path
                     name="address"
                     type="text"
+                    inputmode="url"
                     autocomplete="off"
                     spellcheck="false"
                     placeholder="Path or URL…"
@@ -77,6 +78,10 @@ export function createViewerToolbar(): HTMLElement {
                 <button class="view-viewer__btn" data-action="download" type="button" title="Download as markdown">
                     <ui-icon class="view-viewer__toolbar-icon" icon="download" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
                     <span>Download</span>
+                </button>
+                <button class="view-viewer__btn" data-action="save" type="button" title="Save to the path bar target, or pick a file">
+                    <ui-icon class="view-viewer__toolbar-icon" icon="floppy-disk" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>Save</span>
                 </button>
             </div>
             <div class="view-viewer__toolbar-center" role="presentation">

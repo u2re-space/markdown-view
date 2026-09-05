@@ -4,11 +4,11 @@
  * Shell-agnostic markdown viewer component.
  * **Standalone** `render()`: shell in light DOM (legacy editor preview).
  * **`cw-view-viewer` host** (`renderIntoWebComponentHost`): shadow = mount → shell → view-viewer (toolbar +
- *   `__content` wrapping `<slot name="raw">` + default `<slot>`); light DOM = `<pre slot="raw">` + prose `[data-render-target]`.
+ *   `__content` wrapping `<slot name="raw">` + default `<slot>`); light DOM = raw editor host + prose `[data-render-target]`.
  */
 
-import { H, normalizeDataAsset, parseDataUrl, isBase64Like, decodeBase64ToBytes, openDirectory, provide, defineElement, getDir, normalizePath, isVirtualFsPath, matchMappedRoot, pickAssetDirectory, mountPickedDirectory, observeFileSystemHandle, findEntryRelPath, relPathCandidates, provideBoundRelative, resolveFileUnderDirectory, indexDirectoryFiles, originalRelFromRef, isMarkdownRelativeRef } from "@fest-lib/lure";
-import { pickMarkdownFile, pickSidecarDirectoryFiles, saveMarkdownBlob } from "@fest-lib/lure/markdown-assets";
+import { H, normalizeDataAsset, parseDataUrl, isBase64Like, decodeBase64ToBytes, openDirectory, provide, defineElement, getDir, normalizePath, isVirtualFsPath, matchMappedRoot, pickAssetDirectory, mountPickedDirectory, observeFileSystemHandle, findEntryRelPath, relPathCandidates, provideBoundRelative, resolveFileUnderDirectory, indexDirectoryFiles, originalRelFromRef, isMarkdownRelativeRef, writeFile } from "@fest-lib/lure";
+import { pickMarkdownFile, pickSidecarDirectoryFiles, saveMarkdownBlob, saveMarkdownDocument, writeMarkdownToHandle } from "@fest-lib/lure/markdown-assets";
 import { ref, affected } from "@fest-lib/object";
 import {
     cssLayerBlock,
@@ -31,7 +31,16 @@ import { createViewState } from "views/types";
 import { createViewConstructor } from "views/registry";
 import { ViewerChannelAction, ExplorerChannelAction } from "views/apis/channel-actions";
 import { createViewerChrome } from "./ts/Toolbar";
-import { toNativeStorageVirtualPath } from "fl-ui/explorer/storage-bridge";
+import { createRawEditorHost } from "./ts/Viewer";
+import {
+    createNativeStorageDocument,
+    installNativeShowSaveFilePicker,
+    isNativeStorageAvailable,
+    nativeUriFromSaveHandle,
+    toNativeStorageVirtualPath,
+    writeNativeStorageFile,
+    writeNativeStorageUri,
+} from "fl-ui/explorer/storage-bridge";
 import { loadSettings } from "com/config/Settings";
 import { sendViewProtocolMessage } from "com/core/UniformViewTransport";
 import { inferCwspSkuFromLocation, publicHrefForSku, shouldHandoffViewToSibling, stashSkuHandoff, takeSkuHandoff } from "com/config/ecosystem-skus";
@@ -79,8 +88,6 @@ const VIEWER_OUTLINE_SESSION_KEY = "rs-viewer-outline";
 
 /** Assigning multi‑MB strings to a <pre> synchronously freezes the tab; defer past this threshold. */
 const VIEWER_RAW_TEXTCONTENT_DEFER_CHARS = 96_000;
-/** Raw panel cap (content still fully in memory via ref; only DOM text is truncated). */
-const VIEWER_RAW_DISPLAY_MAX_CHARS = 1_200_000;
 /** Clipboard read / paste file construction — avoid reading multi‑MB blobs on the main thread. */
 const VIEWER_CLIPBOARD_READ_TEXT_MAX_BYTES = 2 * 1024 * 1024;
 /** `isBase64Like` / `parseDataUrl` on megabyte strings can stall; plain paste above this skips probe. */
@@ -278,6 +285,11 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     /** Last `mountPickedDirectory` prefix (`/mounts/md-xxx/`) for ASSETS re-resolve. */
     private boundMountRoot: string | null = null;
     private boundDirectory: FileSystemDirectoryHandle | null = null;
+    /** INVARIANT: RAW `pre > code` is the draft; flush before copy / save / render. */
+    private rawMode = false;
+    private rawEditorDirty = false;
+    private rememberedSaveHandle: FileSystemFileHandle | null = null;
+    private rememberedNativeWriteUri: string | null = null;
     /** Share/launch sidecar images keyed by basename and relative name. */
     private sidecarAssets = new Map<string, File>();
     private assetObjectUrls: string[] = [];
@@ -338,7 +350,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
      */
     private subscribeContentRefToCurrentTargets(
         renderTarget: HTMLElement | null,
-        rawTarget: HTMLPreElement | null
+        rawTarget: HTMLElement | null
     ): void {
         this.disposeContentRefSubscription();
         const dispose = affected(this.contentRef, () => {
@@ -398,7 +410,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.element = this.createViewerShellElement();
 
         const renderTarget = this.element.querySelector("[data-render-target]") as HTMLElement | null;
-        const rawTarget = this.element.querySelector("[data-raw-target]") as HTMLPreElement | null;
+        const rawTarget = this.element.querySelector("[data-raw-target]") as HTMLElement | null;
         this.setupEventHandlers(rawTarget || undefined);
         this.syncOutlineToolbarState();
         this.syncToolbarDocumentTitle();
@@ -429,7 +441,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             this.syncViewerColorSchemeFromOptions();
         }
         const renderTarget = this.queryViewerSlotted("[data-render-target]");
-        const rawTarget = this.queryViewerSlotted("[data-raw-target]") as HTMLPreElement | null;
+        const rawTarget = this.queryViewerSlotted("[data-raw-target]") as HTMLElement | null;
         if (renderTarget) {
             this.subscribeContentRefToCurrentTargets(renderTarget, rawTarget);
             this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
@@ -455,7 +467,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this._sheet ??= loadAsAdopted(style) as CSSStyleSheet;
         this.element = this.createViewerShellElement();
         host.replaceChildren(this.element);
-        const pre = host.querySelector("[data-raw-target]") as HTMLPreElement | null;
+        const pre = host.querySelector("[data-raw-target]") as HTMLElement | null;
         const prose = host.querySelector("[data-render-target]") as HTMLElement | null;
         host.setAttribute("data-view-id", "viewer");
         host.toggleAttribute("data-cw-view-host", true);
@@ -493,9 +505,15 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             this.options.filename = filename;
         }
         if (source !== undefined) {
-            this.sourceUrl = this.normalizeSourceUrl(source);
+            const next = this.normalizeSourceUrl(source);
+            if (next !== this.sourceUrl) {
+                this.rememberedSaveHandle = null;
+                this.rememberedNativeWriteUri = null;
+            }
+            this.sourceUrl = next;
             this.options.source = source || undefined;
         }
+        this.rawEditorDirty = false;
         this.contentRef.value = content;
         this.syncToolbarDocumentTitle();
         this.syncOpenedPath(this.sourceUrl);
@@ -506,7 +524,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private repaintMarkdown(): void {
         const renderTarget = this.queryViewerSlotted("[data-render-target]");
         if (!renderTarget) return;
-        const rawTarget = this.queryViewerSlotted("[data-raw-target]") as HTMLPreElement | null;
+        const rawTarget = this.queryViewerSlotted("[data-raw-target]") as HTMLElement | null;
         this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
     }
 
@@ -531,7 +549,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
      * Get current content
      */
     getContent(): string {
-        return this.contentRef.value;
+        return this.flushRawEditor();
     }
 
     /** Imperative theme — persists on view options; drives `html[data-theme]` for viewer CSS. */
@@ -609,10 +627,10 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         const chrome = createViewerChrome();
         const content = H`
             <div class="view-viewer__content" data-viewer-content>
-                <pre class="markdown-viewer-raw" data-raw-target aria-label="Raw content" hidden></pre>
                 <div class="cw-view-viewer__prose markdown-body markdown-viewer-content result-content" data-render-target data-cw-viewer-prose></div>
             </div>
         ` as HTMLElement;
+        content.prepend(createRawEditorHost());
         const viewer = H`<div class="view-viewer"></div>` as HTMLElement;
         viewer.append(chrome, content);
         return H`<div class="cw-view-viewer-shell">${viewer}</div>` as HTMLElement;
@@ -756,7 +774,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.syncOutlineToolbarState();
     }
 
-    private renderMarkdown(content: string, renderTarget: HTMLElement, rawTarget?: HTMLPreElement | null): void {
+    private renderMarkdown(content: string, renderTarget: HTMLElement, rawTarget?: HTMLElement | null): void {
         if (!renderTarget || this.binaryPreviewActive) return;
         const seq = ++this.renderSeq;
 
@@ -776,26 +794,34 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             renderTarget.removeAttribute("data-md-state");
         };
 
-        // Raw source: huge strings synchronously block layout; defer and cap DOM text.
+        // Raw source: huge strings synchronously block layout; defer DOM write.
         if (rawTarget) {
             const c = content || "";
             const assignRaw = (): void => {
                 if (seq !== this.renderSeq) return;
-                const text = c.length > VIEWER_RAW_DISPLAY_MAX_CHARS
-                    ? `${c.slice(0, VIEWER_RAW_DISPLAY_MAX_CHARS)}\n\n… [truncated — open in editor for full source]`
-                    : c;
-                /* WHY: `</>` raw mode was a bare <pre> — highlight.js only paints pre > code. */
-                let code = rawTarget.querySelector(":scope > code");
-                if (!(code instanceof HTMLElement)) {
-                    code = document.createElement("code");
-                    rawTarget.replaceChildren(code);
+                /* WHY: RAW is editable — never clobber the draft while the caret is in the source. */
+                if (this.rawEditorDirty && rawTarget.contains(document.activeElement)) {
+                    return;
                 }
-                code.textContent = text;
+                let paintHost = rawTarget.matches("code")
+                    ? rawTarget
+                    : (rawTarget.querySelector(":scope > code") as HTMLElement | null);
+                if (!(paintHost instanceof HTMLElement)) {
+                    paintHost = document.createElement("code");
+                    paintHost.className = "code-highlight-source";
+                    paintHost.setAttribute("contenteditable", "plaintext-only");
+                    paintHost.setAttribute("spellcheck", "false");
+                    rawTarget.replaceChildren(paintHost);
+                }
+                if (!paintHost.isContentEditable) {
+                    paintHost.setAttribute("contenteditable", "plaintext-only");
+                }
+                if (paintHost.textContent !== c) paintHost.textContent = c;
                 const lang = languageFromFilename(this.options.filename || this.sourceUrl || "");
                 try {
                     /* WHY: raw </> is the whole document — a gutter overlay + RO
-                     * rewrites line-height while the <pre> is hidden, then pumps height every frame. */
-                    attachCodeHighlight(code, { language: lang, lineNumbers: false });
+                     * rewrites line-height while the editor is hidden, then pumps height every frame. */
+                    attachCodeHighlight(paintHost, { language: lang, lineNumbers: false });
                 } catch (error) {
                     console.warn("[ViewerView] raw highlight skipped", error);
                 }
@@ -809,11 +835,11 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
         // Fast path: empty/whitespace content should never run marked/DOMPurify (avoids hangs + flicker).
         const normalized = String(content ?? "");
-        if (!normalized.trim()) {
+        if (!normalized.trim() && !this.rawMode) {
             if (seq !== this.renderSeq) return;
             this.syncViewerRawMode(false);
             renderTarget.hidden = false;
-            if (rawTarget) rawTarget.hidden = true;
+            this.setRawEditorVisible(false, rawTarget);
             renderTarget.removeAttribute("aria-busy");
             renderTarget.setAttribute("data-md-state", "empty");
             renderTarget.innerHTML =
@@ -825,8 +851,18 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         // Auto-switch to raw if it looks like HTML
         const container = this.element?.querySelector(".view-viewer__content");
         if (container && looksLikeHtmlDocument(content || "")) {
+            this.rawMode = true;
             this.syncViewerRawMode(true);
-            if (rawTarget) rawTarget.hidden = false;
+            this.setRawEditorVisible(true, rawTarget);
+            renderTarget.hidden = true;
+            this.syncToolbarDocumentTitle();
+            endBusy();
+            return;
+        }
+
+        if (this.rawMode) {
+            this.syncViewerRawMode(true);
+            this.setRawEditorVisible(true, rawTarget);
             renderTarget.hidden = true;
             this.syncToolbarDocumentTitle();
             endBusy();
@@ -835,7 +871,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
         this.syncViewerRawMode(false);
         renderTarget.hidden = false;
-        if (rawTarget) rawTarget.hidden = true;
+        this.setRawEditorVisible(false, rawTarget);
 
         // Paint a placeholder first, then do plugin work + marked off the critical stack.
         renderTarget.setAttribute("aria-busy", "true");
@@ -1487,7 +1523,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
     }
 
-    private setupEventHandlers(rawElement?: HTMLPreElement): void {
+    private setupEventHandlers(rawElement?: HTMLElement): void {
         if (!this.element) return;
 
         const toolbar =
@@ -1504,8 +1540,6 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         const shell =
             this.element.classList.contains("cw-view-viewer-shell") ? this.element : null;
         const renderTarget = this.queryViewerSlotted("[data-render-target]");
-
-        let showRaw = false;
 
         toolbar?.addEventListener("click", (e) => {
             const button = (e.composedPath() as EventTarget[]).find(
@@ -1538,10 +1572,16 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     this.handleCopy();
                     break;
                 case "toggle-raw":
-                    showRaw = !showRaw;
-                    if (renderTarget) renderTarget.hidden = showRaw;
-                    if (rawElement) rawElement.hidden = !showRaw;
-                    this.syncViewerRawMode(showRaw);
+                    this.rawMode = !this.rawMode;
+                    if (!this.rawMode) this.flushRawEditor();
+                    if (renderTarget) renderTarget.hidden = this.rawMode;
+                    this.setRawEditorVisible(this.rawMode, rawElement);
+                    this.syncViewerRawMode(this.rawMode);
+                    this.repaintMarkdown();
+                    if (this.rawMode) {
+                        const caret = this.rawSourceEl(rawElement);
+                        caret?.focus({ preventScroll: true });
+                    }
                     break;
                 case "copy-rendered":
                     if (renderTarget) {
@@ -1550,6 +1590,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     break;
                 case "download":
                     this.handleDownload();
+                    break;
+                case "save":
+                    void this.handleSave();
                     break;
                 case "export-docx":
                     void this.handleExportDocx();
@@ -1575,6 +1618,19 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             e.preventDefault();
             void this.goPathFromBar();
         });
+
+        const rawSource = this.rawSourceEl(rawElement);
+        rawSource?.addEventListener("input", () => {
+            this.rawEditorDirty = true;
+        });
+
+        const onSaveKey = (e: KeyboardEvent): void => {
+            if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+            if (String(e.key || "").toLowerCase() !== "s") return;
+            e.preventDefault();
+            void this.handleSave();
+        };
+        (shell || this.element)?.addEventListener("keydown", onSaveKey);
 
         const pathBar =
             this.element.querySelector("[data-viewer-pathbar]") ||
@@ -1774,7 +1830,10 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 virtualPath: picked.virtualPath || null,
                 filename: picked.file.name
             });
-            if (ok) this.showMessage(`Opened ${picked.file.name}`);
+            if (ok) {
+                if (picked.handle) this.rememberedSaveHandle = picked.handle;
+                this.showMessage(`Opened ${picked.file.name}`);
+            }
         })();
     }
 
@@ -1904,7 +1963,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private async handleCopy(): Promise<void> {
-        const raw = this.contentRef.value || "";
+        const raw = this.flushRawEditor() || "";
         if (!raw.trim()) {
             this.showMessage("No content to copy");
             return;
@@ -1955,8 +2014,242 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
     }
 
+    private rawEditorEl(): HTMLElement | null {
+        return this.queryViewerSlotted("[data-raw-target]") as HTMLElement | null;
+    }
+
+    private rawSourceEl(raw?: HTMLElement | null): HTMLElement | null {
+        const el = raw || this.rawEditorEl();
+        if (!el) return null;
+        if (el instanceof HTMLTextAreaElement || el.matches("code")) return el;
+        return (el.querySelector(":scope > code") as HTMLElement | null) || el;
+    }
+
+    private rawEditorHostHidden(raw: HTMLElement | null | undefined): boolean {
+        return !raw || raw.hidden;
+    }
+
+    private setRawEditorVisible(visible: boolean, rawElement?: HTMLElement | null): void {
+        const el = rawElement || this.rawEditorEl();
+        if (el) el.hidden = !visible;
+    }
+
+    private elementText(el: HTMLElement | null | undefined): string {
+        if (!el) return "";
+        if (el instanceof HTMLTextAreaElement) return el.value;
+        const source = this.rawSourceEl(el) || el;
+        return source.textContent || "";
+    }
+
+    private flushRawEditor(): string {
+        const source = this.rawSourceEl();
+        if (source) {
+            const next = source instanceof HTMLTextAreaElement ? source.value : (source.textContent || "");
+            if (next !== this.contentRef.value) this.contentRef.value = next;
+            this.rawEditorDirty = false;
+            return next;
+        }
+        return this.contentRef.value || "";
+    }
+
+    private suggestedSaveName(): string {
+        const fromOpt = String(this.options.filename || "").trim();
+        if (fromOpt) return fromOpt;
+        const path = this.pathInputValue() || this.sourceUrl || "";
+        const base = path.split(/[\\/]/).filter(Boolean).pop() || "";
+        const clean = base.split("?")[0].split("#")[0];
+        if (clean && /\.[A-Za-z0-9]+$/.test(clean)) return clean;
+        return `document-${Date.now()}.md`;
+    }
+
+    /** http(s) / blob / data — not a filesystem target. */
+    private isRemoteSaveTarget(raw: string): boolean {
+        return /^(?:https?:|blob:|data:|mailto:|chrome-extension:)/i.test(String(raw || "").trim());
+    }
+
+    /**
+     * Storage / OPFS / URL pathname root (`/`, `/sdcard`, `https://host/`).
+     * WHY: native + lure refuse the root; that error must open a local picker, not fail the Save.
+     */
+    private isRootSaveTarget(raw: string): boolean {
+        const trimmed = String(raw || "").trim();
+        if (!trimmed) return false;
+        try {
+            if (/^https?:/i.test(trimmed)) {
+                const url = new URL(trimmed, globalThis.location.href);
+                const path = url.pathname.replace(/\/+$/, "") || "/";
+                if (path === "/") return true;
+            }
+        } catch {
+            /* not a URL */
+        }
+        const native = toNativeStorageVirtualPath(trimmed);
+        const candidate = (native || trimmed).split(/[?#]/)[0];
+        const normalized = candidate.replace(/\/+$/, "") || "/";
+        return (
+            normalized === "/" ||
+            normalized === "/sdcard" ||
+            normalized === "/saf" ||
+            normalized === "/user" ||
+            normalized === "/idb" ||
+            normalized === "/mounts" ||
+            normalized === "/desktop"
+        );
+    }
+
+    private resolveWritablePath(raw: string, filename: string): string {
+        const native = toNativeStorageVirtualPath(raw);
+        const candidate = native || raw;
+        if (!candidate) return "";
+        if (this.isRemoteSaveTarget(candidate) || this.isRootSaveTarget(candidate)) return "";
+        if (native) return native.endsWith("/") ? `${native}${filename}` : native;
+        if (isVirtualFsPath(candidate)) {
+            return candidate.endsWith("/") ? `${candidate}${filename}` : candidate;
+        }
+        return "";
+    }
+
+    private async writeRelUnderDirectory(
+        dir: FileSystemDirectoryHandle,
+        rel: string,
+        content: string
+    ): Promise<FileSystemFileHandle | null> {
+        const parts = String(rel || "").split(/[\\/]/).filter(Boolean);
+        if (!parts.length) return null;
+        const name = parts.pop() as string;
+        let cur: FileSystemDirectoryHandle = dir;
+        const query = dir.queryPermission?.({ mode: "readwrite" });
+        if (query) {
+            const state = await query;
+            if (state !== "granted") {
+                const next = await dir.requestPermission?.({ mode: "readwrite" });
+                if (next && next !== "granted") return null;
+            }
+        }
+        for (const seg of parts) {
+            cur = await cur.getDirectoryHandle(seg, { create: true });
+        }
+        const file = await cur.getFileHandle(name, { create: true });
+        if (!(await writeMarkdownToHandle(file, content))) return null;
+        return file;
+    }
+
+    private async tryWriteVirtualPath(target: string, content: string, filename: string): Promise<boolean> {
+        if (this.isRemoteSaveTarget(target) || this.isRootSaveTarget(target)) return false;
+        try {
+            const native = toNativeStorageVirtualPath(target);
+            if (native) {
+                if (this.isRootSaveTarget(native)) return false;
+                const ok = await writeNativeStorageFile(native, content, { mimeType: "text/markdown" });
+                if (ok) {
+                    this.sourceUrl = this.normalizeSourceUrl(native);
+                    this.options.source = native;
+                    this.syncOpenedPath(native);
+                }
+                return ok;
+            }
+            if (this.boundDirectory && this.boundMountRoot && target.startsWith(this.boundMountRoot)) {
+                const rel = target.slice(this.boundMountRoot.length);
+                if (!rel || rel === "/") return false;
+                const handle = await this.writeRelUnderDirectory(this.boundDirectory, rel, content).catch(() => null);
+                if (handle) {
+                    this.rememberedSaveHandle = handle;
+                    this.sourceUrl = this.normalizeSourceUrl(target);
+                    this.options.source = target;
+                    this.syncOpenedPath(target);
+                    return true;
+                }
+            }
+            const file = new File([content], filename, { type: "text/markdown" });
+            const ok = await writeFile(null, target, file);
+            if (ok) {
+                this.sourceUrl = this.normalizeSourceUrl(target);
+                this.options.source = target;
+                this.syncOpenedPath(target);
+                return true;
+            }
+        } catch {
+            /* HTTPS / ROOT / permission — caller opens a local picker */
+        }
+        return false;
+    }
+
+    /**
+     * Path bar first (create if missing) → remembered FSA / native URI →
+     * `showSaveFilePicker` or Capacitor ACTION_CREATE_DOCUMENT.
+     * INVARIANT: HTTPS, storage ROOT, and any in-place write error open a local picker.
+     */
+    private async handleSave(): Promise<void> {
+        const content = this.flushRawEditor();
+        const filename = this.suggestedSaveName();
+        const pathRaw = this.pathInputValue() || this.sourceUrl || "";
+        const remoteOrRoot = this.isRemoteSaveTarget(pathRaw) || this.isRootSaveTarget(pathRaw);
+        try {
+            const target = remoteOrRoot ? "" : this.resolveWritablePath(pathRaw, filename);
+            if (target && await this.tryWriteVirtualPath(target, content, filename)) {
+                this.showMessage(`Saved ${filename}`);
+                this.options.onDownload?.(content, filename);
+                return;
+            }
+            if (this.rememberedSaveHandle && await writeMarkdownToHandle(this.rememberedSaveHandle, content)) {
+                this.showMessage(`Saved ${filename}`);
+                this.options.onDownload?.(content, filename);
+                return;
+            }
+            if (this.rememberedNativeWriteUri && await writeNativeStorageUri(this.rememberedNativeWriteUri, content)) {
+                this.showMessage(`Saved ${filename}`);
+                this.options.onDownload?.(content, filename);
+                return;
+            }
+        } catch {
+            /* fall through — local picker */
+        }
+        await this.saveViaLocalPicker(content, filename);
+    }
+
+    /** Local `showSaveFilePicker` / ACTION_CREATE_DOCUMENT after HTTPS, ROOT, or write failure. */
+    private async saveViaLocalPicker(content: string, filename: string): Promise<void> {
+        installNativeShowSaveFilePicker();
+        if (isNativeStorageAvailable()) {
+            try {
+                const created = await createNativeStorageDocument(filename, content);
+                if (created.cancelled) return;
+                if (created.ok) {
+                    if (created.uri) this.rememberedNativeWriteUri = created.uri;
+                    this.showMessage(`Saved ${filename}`);
+                    this.options.onDownload?.(content, filename);
+                    return;
+                }
+            } catch {
+                /* polyfill / share fallback */
+            }
+        }
+        let outcome;
+        try {
+            outcome = await saveMarkdownDocument(content, filename, this.rememberedSaveHandle);
+        } catch {
+            this.showMessage("Failed to save file");
+            return;
+        }
+        if (outcome.handle) {
+            this.rememberedSaveHandle = outcome.handle;
+            const nativeUri = nativeUriFromSaveHandle(outcome.handle);
+            if (nativeUri) this.rememberedNativeWriteUri = nativeUri;
+            if (outcome.handle.name) this.options.filename = outcome.handle.name;
+        }
+        if (outcome.result === "cancelled") return;
+        if (outcome.result === "failed") {
+            this.showMessage("Failed to save file");
+            return;
+        }
+        this.showMessage(
+            outcome.result === "shared" ? `Shared ${filename}` : `Saved ${filename}`
+        );
+        this.options.onDownload?.(content, filename);
+    }
+
     private handleDownload(): void {
-        const content = this.contentRef.value;
+        const content = this.flushRawEditor();
         const filename = this.options.filename || `document-${Date.now()}.md`;
         void saveMarkdownBlob(content, filename).then((result) => {
             if (result === "cancelled") return;
@@ -1970,7 +2263,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private async handleExportDocx(): Promise<void> {
-        const content = this.contentRef.value;
+        const content = this.flushRawEditor();
         if (!content.trim()) {
             this.showMessage("No content to export");
             return;
@@ -2007,11 +2300,12 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
     private handlePrint(renderTarget: HTMLElement): void {
         try {
-            const rawTarget = this.queryViewerSlotted("[data-raw-target]") as HTMLPreElement | null;
-            const isRawVisible = Boolean(rawTarget && !rawTarget.hidden);
+            const rawTarget = this.queryViewerSlotted("[data-raw-target]") as HTMLElement | null;
+            const isRawVisible = Boolean(rawTarget && !this.rawEditorHostHidden(rawTarget));
             const printTarget = isRawVisible ? rawTarget : renderTarget;
+            const printText = this.elementText(printTarget);
 
-            if (!printTarget || !(printTarget.textContent || "").trim()) {
+            if (!printTarget || !printText.trim()) {
                 this.showMessage("No content to print");
                 return;
             }
@@ -2035,7 +2329,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             globalThis?.print?.();
             setTimeout(clearPrintMarks, 4000);
 
-            this.options.onPrint?.(this.contentRef.value);
+            this.options.onPrint?.(this.flushRawEditor());
         } catch (error) {
             console.error("[ViewerView] Error printing content:", error);
             this.showMessage("Failed to print");
@@ -2058,7 +2352,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
     /** Push current markdown buffer into Work Center (toolbar attach / channel API). */
     async attachCurrentContentToWorkcenter(): Promise<void> {
-        const content = this.contentRef.value || "";
+        const content = this.flushRawEditor() || "";
         if (!content.trim()) {
             this.showMessage("No content to attach");
             return;
@@ -2766,7 +3060,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
     private saveState(): void {
         this.stateManager.save({
-            content: this.contentRef.value,
+            content: this.flushRawEditor(),
             filename: this.options.filename
         });
     }
@@ -3228,6 +3522,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             window.addEventListener("pageshow", this.visibilityOpenListener);
         }
         ensureViewerIconRuntime();
+        installNativeShowSaveFilePicker();
         this._sheet ??= loadAsAdopted(style) as CSSStyleSheet;
         this.applyCustomStyles();
         void this.markdownSettingsPromise;

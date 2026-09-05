@@ -766,7 +766,7 @@
         .cw-view-viewer-shell .markdown-viewer-raw,
         .cw-view-viewer-shell pre[data-raw-target] {
             position: relative;
-            margin: 0;
+            margin: 0px !important;
             padding: var(--view-padding);
             color: var(--view-fg);
             background-color: var(--view-bg);
@@ -780,15 +780,33 @@
             word-break: normal;
             overflow-wrap: normal;
             overflow-x: auto;
+            margin-block: 0px !important;
+            margin-block-start: 0px !important;
+            margin-block-end: 0px !important;
 
-            > code {
+            & > code {
                 display: block;
+                inline-size: 100%;
                 font: inherit;
                 line-height: inherit;
                 white-space: inherit;
                 word-break: inherit;
                 overflow-wrap: inherit;
                 color: inherit;
+                background: transparent;
+                outline: none;
+                caret-color: contrast-color(var(--view-bg));
+            }
+
+            & > code[contenteditable].code-highlight-painted:not(.code-highlight-source-only) {
+                color: transparent;
+                -webkit-text-fill-color: transparent;
+                caret-color: contrast-color(var(--view-bg));
+            }
+
+            & > code.code-highlight-source-only {
+                color: inherit;
+                -webkit-text-fill-color: currentColor;
             }
         }
 
@@ -823,6 +841,13 @@
         @keyframes view-spin {
             to {
                 transform: rotate(360deg);
+            }
+        }
+
+        @media screen {
+            .markdown-viewer-raw {
+                margin: 0px !important;
+                margin-block: 0px !important;
             }
         }
 
@@ -873,6 +898,27 @@
                 contain: none !important;
                 max-block-size: none !important;
                 min-block-size: 0 !important;
+            }
+
+            .markdown-viewer-raw,
+            .markdown-viewer-raw > code,
+            pre[data-raw-target],
+            pre[data-raw-target] > code {
+                margin: 0px !important;
+                display: block !important;
+                block-size: max-content !important;
+                inline-size: 100% !important;
+                overflow: visible !important;
+                color: #000 !important;
+                -webkit-text-fill-color: #000 !important;
+                background: transparent !important;
+                margin-block: 0px !important;
+                margin-block-start: 0px !important;
+                margin-block-end: 0px !important;
+            }
+
+            .code-highlight-overlay {
+                display: none !important;
             }
 
             .cw-view-viewer__slot-raw,
@@ -4133,6 +4179,21 @@
                 --md-code-block-fg: var(--view-code-fg, var(--view-fg, CanvasText));
                 --md-code-block-bg: var(--view-code-bg, var(--color-surface-container, Canvas));
                 --md-bg-code: var(--view-code-bg, var(--color-surface-container, Canvas));
+
+                pre {
+                    background: var(--md-code-block-bg);
+                    color: var(--md-code-block-fg);
+                    border-radius: 6px;
+                    padding: 1rem;
+                    overflow-x: auto;
+
+                    > code {
+                        display: block;
+                        background: transparent;
+                        padding: 0;
+                        color: inherit;
+                    }
+                }
             }
         }
 

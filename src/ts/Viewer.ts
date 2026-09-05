@@ -23,6 +23,25 @@ export function createMarkdownViewFrame(): HTMLElement {
     ` as HTMLElement;
 }
 
+/** Editable RAW: `pre > code[contenteditable]` so highlight overlay stays inside the slotted `<pre>`. */
+export function createRawEditorHost(opts?: { slot?: string }): HTMLElement {
+    const pre = document.createElement("pre");
+    pre.className = "markdown-viewer-raw";
+    pre.toggleAttribute("data-raw-target", true);
+    pre.setAttribute("aria-label", "Raw content");
+    pre.hidden = true;
+    if (opts?.slot) pre.slot = opts.slot;
+    const code = document.createElement("code");
+    code.className = "code-highlight-source";
+    /* WHY: plaintext-only keeps textContent as the draft (Chromium). */
+    code.setAttribute("contenteditable", "plaintext-only");
+    code.setAttribute("spellcheck", "false");
+    code.setAttribute("autocapitalize", "off");
+    code.setAttribute("autocorrect", "off");
+    pre.appendChild(code);
+    return pre;
+}
+
 /** Lightweight host element for viewer content that can switch between raw and prose modes. */
 export class MarkdownViewFrameElement extends HTMLElement {
     ensureReady(): this {
@@ -31,17 +50,16 @@ export class MarkdownViewFrameElement extends HTMLElement {
         self.dataset.ready = "1";
         self.classList.add("cw-markdown-view-frame");
 
-        let pre = self.querySelector(":scope > pre[data-raw-target]") as HTMLPreElement | null;
+        let pre = self.querySelector(":scope > pre[data-raw-target]") as HTMLElement | null;
+        const leftover = self.querySelector(":scope > .markdown-viewer-raw-host, :scope > textarea[data-raw-target]");
         if (!pre) {
-            pre = document.createElement("pre");
-            pre.className = "markdown-viewer-raw";
-            pre.toggleAttribute("data-raw-target", true);
-            pre.setAttribute("aria-label", "Raw content");
-            pre.slot = "raw";
-            self.appendChild(pre);
+            pre = createRawEditorHost({ slot: "raw" });
+            if (leftover) leftover.replaceWith(pre);
+            else self.appendChild(pre);
         } else if (!pre.slot) {
             pre.slot = "raw";
         }
+        leftover?.remove();
 
         let prose = self.querySelector(":scope > [data-render-target]") as HTMLElement | null;
         if (!prose) {
