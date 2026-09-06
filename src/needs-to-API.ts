@@ -1750,6 +1750,20 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         if (btn) btn.disabled = this.pathHistoryIndex <= 0;
     }
 
+    /** Keep `/sdcard/…` in the path bar and the `content://` write-uri after Open / VIEW. */
+    private rememberOpenedWriteBack(raw?: string | null, mapped?: string | null): void {
+        const uri = String(raw || "").trim();
+        const path = toNativeStorageVirtualPath(mapped || uri) || String(mapped || "").trim();
+        if (path && /^\/(?:sdcard|saf)(?:\/|$)/i.test(path) && !this.isRootSaveTarget(path)) {
+            this.sourceUrl = this.normalizeSourceUrl(path);
+            this.options.source = path;
+            this.syncOpenedPath(path);
+        }
+        if (/^(?:content|file):/i.test(uri)) {
+            this.rememberedNativeWriteUri = uri;
+        }
+    }
+
     private syncOpenedPath(source?: string | null): void {
         const next = String(source || this.sourceUrl || "").trim();
         const input = this.pathInputEl();
@@ -1832,6 +1846,10 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             });
             if (ok) {
                 if (picked.handle) this.rememberedSaveHandle = picked.handle;
+                this.rememberOpenedWriteBack(
+                    nativeUriFromSaveHandle(picked.handle),
+                    picked.virtualPath || null
+                );
                 this.showMessage(`Opened ${picked.file.name}`);
             }
         })();
@@ -3593,6 +3611,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 name?: string;
                 mime?: string;
                 url?: string;
+                uri?: string;
+                path?: string;
+                virtualPath?: string;
                 hasFile?: boolean | string | number;
                 stashedAt?: number | string;
             };
@@ -3600,8 +3621,12 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             if (!echo.text && !echo.title && !echo.name && !echo.url && echo.hasFile == null) return;
             const flagged =
                 echo.hasFile === true || echo.hasFile === "true" || echo.hasFile === 1 || echo.hasFile === "1";
-            const url = String(echo.url || "").trim();
-            const local = isAndroidLocalShareUri(url) || isAndroidLocalShareUri(echo.text);
+            const url = String(echo.url || echo.uri || "").trim();
+            const mapped =
+                toNativeStorageVirtualPath(url)
+                || toNativeStorageVirtualPath(String(echo.virtualPath || echo.path || echo.text || ""))
+                || String(echo.virtualPath || echo.path || "").trim();
+            const local = isAndroidLocalShareUri(url) || isAndroidLocalShareUri(echo.text) || /^\/(?:sdcard|saf)(?:\/|$)/i.test(mapped);
             const mime = String(echo.mime || "").toLowerCase();
             const nameHint = String(echo.name || echo.title || "").toLowerCase();
             const wantFile =
@@ -3625,7 +3650,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 await invokeCwsPlatformIPC({ channel: "launcher:restash-share-file" }).catch(() => null);
                 file = await pullFile();
             }
-            const source = local ? null : url || null;
+            const source = (mapped && /^\/(?:sdcard|saf)(?:\/|$)/i.test(mapped))
+                ? mapped
+                : (local ? (mapped || url || null) : (url || null));
             const filename = String(echo.name || echo.title || file?.name || "").trim();
             const text = String(echo.text || "").trim();
             /* INVARIANT: ack only after paint — share-intent used to delete the stash first. */
@@ -3633,6 +3660,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             if (file) {
                 /* WHY: native Open-with/Share on this SKU must paint here — open-policy handoff leaves a blank viewer. */
                 applied = await this.paintSharedIngressFile(file, filename, source);
+                if (applied) this.rememberOpenedWriteBack(url, mapped);
             } else if (text && !isAndroidLocalShareUri(text)) {
                 this.ingestOpenedMarkdownBody(text, filename, source);
                 applied = true;
