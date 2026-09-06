@@ -226,6 +226,15 @@
             overflow: hidden;
         }
 
+        html[data-vk-open] .cw-view-viewer-shell,
+        html[data-vk-open] .view-viewer,
+        :host-context(html[data-vk-open]) .cw-view-viewer-shell,
+        :host-context(html[data-vk-open]) .view-viewer {
+            min-block-size: 0;
+            block-size: 100%;
+            max-block-size: 100%;
+        }
+
         .cw-view-viewer-shell:not([data-raw]) .view-viewer {
             flex: 1 1 auto;
             min-block-size: 0;
@@ -845,9 +854,31 @@
         }
 
         @media screen {
+            /*
+             * WHY: Padding belongs on the scrollport. Growing `pre > code` stretched the
+             * whole viewer (and then the document) when the IME opened.
+             */
+            .cw-view-viewer-shell:has(.cw-view-viewer__slot-default)[data-raw] .cw-view-viewer__slot-raw,
+            .cw-view-viewer-shell:not(:has(.cw-view-viewer__slot-default))[data-raw] .view-viewer__content,
+            .cw-view-viewer-shell:has(.cw-view-viewer__slot-default):not([data-raw]) .cw-view-viewer__slot-default,
+            .cw-view-viewer-shell:not(:has(.cw-view-viewer__slot-default)):not([data-raw]) .cw-view-viewer__prose {
+                box-sizing: border-box;
+                padding-block-end: var(--virtual-keyboard-height, env(keyboard-inset-height, 0px));
+            }
+
             .markdown-viewer-raw {
                 margin: 0px !important;
                 margin-block: 0px !important;
+                min-block-size: stretch !important;
+                block-size: fit-content !important;
+                max-block-size: stretch !important;
+                box-sizing: border-box !important;
+
+                code {
+                    box-sizing: border-box !important;
+                    min-block-size: stretch !important;
+                    padding-block-end: calc(var(--virtual-keyboard-height, env(keyboard-inset-height, 0px)) + env(safe-area-inset-bottom, 0px)) !important;
+                }
             }
         }
 
