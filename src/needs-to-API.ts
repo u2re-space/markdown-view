@@ -31,7 +31,7 @@ import { createViewState } from "views/types";
 import { createViewConstructor } from "views/registry";
 import { ViewerChannelAction, ExplorerChannelAction } from "views/apis/channel-actions";
 import { createViewerChrome } from "./ts/Toolbar";
-import { createRawEditorHost } from "./ts/Viewer";
+import { createRawEditorHost, isRawEditorHost } from "./ts/Viewer";
 import {
     createNativeStorageDocument,
     installNativeShowSaveFilePicker,
@@ -800,7 +800,17 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             const assignRaw = (): void => {
                 if (seq !== this.renderSeq) return;
                 /* WHY: RAW is editable — never clobber the draft while the caret is in the source. */
-                if (this.rawEditorDirty && rawTarget.contains(document.activeElement)) {
+                if (this.rawEditorDirty && this.rawEditorHasFocus(rawTarget)) {
+                    return;
+                }
+                const lang = languageFromFilename(this.options.filename || this.sourceUrl || "");
+                if (isRawEditorHost(rawTarget)) {
+                    rawTarget.value = c;
+                    try {
+                        rawTarget.highlight(lang);
+                    } catch (error) {
+                        console.warn("[ViewerView] raw highlight skipped", error);
+                    }
                     return;
                 }
                 let paintHost = rawTarget.matches("code")
@@ -817,7 +827,6 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     paintHost.setAttribute("contenteditable", "plaintext-only");
                 }
                 if (paintHost.textContent !== c) paintHost.textContent = c;
-                const lang = languageFromFilename(this.options.filename || this.sourceUrl || "");
                 try {
                     /* WHY: raw </> is the whole document — a gutter overlay + RO
                      * rewrites line-height while the editor is hidden, then pumps height every frame. */
@@ -2039,8 +2048,17 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private rawSourceEl(raw?: HTMLElement | null): HTMLElement | null {
         const el = raw || this.rawEditorEl();
         if (!el) return null;
+        if (isRawEditorHost(el)) return el.sourceElement || el;
         if (el instanceof HTMLTextAreaElement || el.matches("code")) return el;
         return (el.querySelector(":scope > code") as HTMLElement | null) || el;
+    }
+
+    private rawEditorHasFocus(raw?: HTMLElement | null): boolean {
+        const el = raw || this.rawEditorEl();
+        if (!el) return false;
+        if (isRawEditorHost(el)) return el.hasFocus();
+        const active = typeof document !== "undefined" ? document.activeElement : null;
+        return Boolean(active && el.contains(active));
     }
 
     private rawEditorHostHidden(raw: HTMLElement | null | undefined): boolean {
@@ -2054,12 +2072,20 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
     private elementText(el: HTMLElement | null | undefined): string {
         if (!el) return "";
+        if (isRawEditorHost(el)) return el.value;
         if (el instanceof HTMLTextAreaElement) return el.value;
         const source = this.rawSourceEl(el) || el;
         return source.textContent || "";
     }
 
     private flushRawEditor(): string {
+        const host = this.rawEditorEl();
+        if (isRawEditorHost(host)) {
+            const next = host.value;
+            if (next !== this.contentRef.value) this.contentRef.value = next;
+            this.rawEditorDirty = false;
+            return next;
+        }
         const source = this.rawSourceEl();
         if (source) {
             const next = source instanceof HTMLTextAreaElement ? source.value : (source.textContent || "");

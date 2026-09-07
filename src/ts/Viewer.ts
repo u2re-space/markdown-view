@@ -1,11 +1,16 @@
 /**
  * Custom element wrapper used by the markdown/viewer surface.
+ * FIND:raw-editor-layout
  *
  * It creates the shadow-shell that toggles between rendered prose and raw
  * source output while keeping the light-DOM render targets stable for the rest
  * of the viewer pipeline.
  */
+import { ensureViewportTracking } from "@fest-lib/dom";
+import { createRawEditorHost, isRawEditorHost } from "@fest-lib/fl-ui/markdown/raw-editor";
 import { H } from "@fest-lib/lure";
+
+export { createRawEditorHost, isRawEditorHost };
 
 const FRAME_TAG = "cw-markdown-view-frame";
 
@@ -23,25 +28,6 @@ export function createMarkdownViewFrame(): HTMLElement {
     ` as HTMLElement;
 }
 
-/** Editable RAW: `pre > code[contenteditable]` so highlight overlay stays inside the slotted `<pre>`. */
-export function createRawEditorHost(opts?: { slot?: string }): HTMLElement {
-    const pre = document.createElement("pre");
-    pre.className = "markdown-viewer-raw";
-    pre.toggleAttribute("data-raw-target", true);
-    pre.setAttribute("aria-label", "Raw content");
-    pre.hidden = true;
-    if (opts?.slot) pre.slot = opts.slot;
-    const code = document.createElement("code");
-    code.className = "code-highlight-source";
-    /* WHY: plaintext-only keeps textContent as the draft (Chromium). */
-    code.setAttribute("contenteditable", "plaintext-only");
-    code.setAttribute("spellcheck", "false");
-    code.setAttribute("autocapitalize", "off");
-    code.setAttribute("autocorrect", "off");
-    pre.appendChild(code);
-    return pre;
-}
-
 /** Lightweight host element for viewer content that can switch between raw and prose modes. */
 export class MarkdownViewFrameElement extends HTMLElement {
     ensureReady(): this {
@@ -50,16 +36,18 @@ export class MarkdownViewFrameElement extends HTMLElement {
         self.dataset.ready = "1";
         self.classList.add("cw-markdown-view-frame");
 
-        let pre = self.querySelector(":scope > pre[data-raw-target]") as HTMLElement | null;
+        let raw = self.querySelector(":scope > [data-raw-target]") as HTMLElement | null;
         const leftover = self.querySelector(":scope > .markdown-viewer-raw-host, :scope > textarea[data-raw-target]");
-        if (!pre) {
-            pre = createRawEditorHost({ slot: "raw" });
-            if (leftover) leftover.replaceWith(pre);
-            else self.appendChild(pre);
-        } else if (!pre.slot) {
-            pre.slot = "raw";
+        if (!isRawEditorHost(raw)) {
+            const next = createRawEditorHost({ slot: "raw" });
+            if (raw) raw.replaceWith(next);
+            else if (leftover) leftover.replaceWith(next);
+            else self.appendChild(next);
+            raw = next;
+        } else if (!raw.slot) {
+            raw.slot = "raw";
         }
-        leftover?.remove();
+        if (leftover && leftover !== raw) leftover.remove();
 
         let prose = self.querySelector(":scope > [data-render-target]") as HTMLElement | null;
         if (!prose) {
@@ -101,9 +89,27 @@ export class MarkdownViewFrameElement extends HTMLElement {
                     box-sizing: border-box;
                     min-inline-size: 0;
                     min-block-size: 0;
-                    overflow-block: auto;
-                    overflow-inline: hidden;
                     overscroll-behavior: contain;
+                }
+
+                /* WHY: raw scroll lives inside cw-raw-editor shadow, not this slot. */
+                .cw-view-viewer__slot-raw {
+                    overflow: hidden;
+                }
+
+                .cw-view-viewer__slot-raw > slot::slotted(cw-raw-editor) {
+                    display: block;
+                    box-sizing: border-box;
+                    width: 100%;
+                    height: 100%;
+                    min-width: 0;
+                    min-height: 0;
+                }
+
+                .cw-view-viewer__slot-default {
+                    overflow-x: hidden;
+                    overflow-y: auto;
+                    padding-bottom: var(--virtual-keyboard-height, 0px);
                 }
 
                 .cw-view-viewer__slot-default > slot {
@@ -120,8 +126,8 @@ export class MarkdownViewFrameElement extends HTMLElement {
                     max-block-size: 100%;
                     min-inline-size: 0;
                     min-block-size: 0;
-                    overflow-block: auto;
-                    overflow-inline: hidden;
+                    overflow-x: hidden;
+                    overflow-y: auto;
                     overscroll-behavior: contain;
                 }
 
@@ -142,6 +148,7 @@ export class MarkdownViewFrameElement extends HTMLElement {
     }
 
     connectedCallback(): this {
+        ensureViewportTracking();
         return this.ensureReady();
     }
 }

@@ -283,6 +283,8 @@
             box-sizing: border-box;
             overflow-block: auto;
             overflow-inline: hidden;
+            overflow-y: auto;
+            overflow-x: hidden;
             overscroll-behavior: contain;
 
             &>slot {
@@ -302,6 +304,8 @@
                 min-inline-size: 0;
                 overflow-block: auto;
                 overflow-inline: hidden;
+                overflow-y: auto;
+                overflow-x: hidden;
                 overscroll-behavior: contain;
             }
         }
@@ -315,6 +319,8 @@
             box-sizing: border-box;
             overflow-block: auto;
             overflow-inline: hidden;
+            overflow-y: auto;
+            overflow-x: hidden;
             overscroll-behavior: contain;
         }
 
@@ -332,6 +338,8 @@
             box-sizing: border-box;
             overflow-block: auto;
             overflow-inline: hidden;
+            overflow-y: auto;
+            overflow-x: hidden;
             overscroll-behavior: contain;
         }
 
@@ -723,6 +731,8 @@
             min-block-size: 0;
             overflow-block: auto;
             overflow-inline: hidden;
+            overflow-y: auto;
+            overflow-x: hidden;
             overscroll-behavior: contain;
         }
 
@@ -768,6 +778,8 @@
             max-block-size: none;
             overflow-block: auto;
             overflow-inline: hidden;
+            overflow-y: auto;
+            overflow-x: hidden;
             overscroll-behavior: contain;
         }
 
@@ -4147,6 +4159,8 @@
             min-block-size: 0;
             overflow-block: auto;
             overflow-inline: hidden;
+            overflow-y: auto;
+            overflow-x: hidden;
             overscroll-behavior: contain;
         }
 
@@ -4194,6 +4208,8 @@
             max-block-size: none;
             overflow-block: auto;
             overflow-inline: hidden;
+            overflow-y: auto;
+            overflow-x: hidden;
             overscroll-behavior: contain;
         }
 
@@ -4507,6 +4523,8 @@
                 box-sizing: border-box;
                 overflow-block: auto;
                 overflow-inline: hidden;
+                overflow-y: auto;
+                overflow-x: hidden;
                 overscroll-behavior: contain;
 
                 &>slot {
@@ -4527,6 +4545,8 @@
                     min-inline-size: 0;
                     overflow-block: auto;
                     overflow-inline: hidden;
+                    overflow-y: auto;
+                    overflow-x: hidden;
                     overscroll-behavior: contain;
                 }
             }
@@ -4540,6 +4560,8 @@
                 box-sizing: border-box;
                 overflow-block: auto;
                 overflow-inline: hidden;
+                overflow-y: auto;
+                overflow-x: hidden;
                 overscroll-behavior: contain;
             }
 
@@ -4559,6 +4581,8 @@
                 box-sizing: border-box;
                 overflow-block: auto;
                 overflow-inline: hidden;
+                overflow-y: auto;
+                overflow-x: hidden;
                 overscroll-behavior: contain;
             }
 
