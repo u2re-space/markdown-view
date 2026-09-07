@@ -106,6 +106,23 @@ export class MarkdownViewFrameElement extends HTMLElement {
                     min-height: 0;
                 }
 
+                /* WHY: flex-basis:auto sizes to the draft; WebView then scrolls the
+                 * whole view-viewer (toolbars). Pin the slot and fill it absolutely. */
+                :host-context(html[data-cwsp-native-shell="capacitor"]) .cw-view-viewer__slot-raw {
+                    flex: 1 1 0%;
+                    height: 0;
+                    position: relative;
+                    overflow: hidden;
+                }
+
+                :host-context(html[data-cwsp-native-shell="capacitor"]) .cw-view-viewer__slot-raw > slot::slotted(cw-raw-editor) {
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                }
+
                 .cw-view-viewer__slot-default {
                     overflow-x: hidden;
                     overflow-y: auto;
