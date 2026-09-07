@@ -226,14 +226,8 @@
             overflow: hidden;
         }
 
-        html[data-vk-open] .cw-view-viewer-shell,
-        html[data-vk-open] .view-viewer,
-        :host-context(html[data-vk-open]) .cw-view-viewer-shell,
-        :host-context(html[data-vk-open]) .view-viewer {
-            min-block-size: 0;
-            block-size: 100%;
-            max-block-size: 100%;
-        }
+        /* WHY: do not size the viewer to 100% of the visual viewport when IME/Select All
+         * shrinks it — shell stays on `--lv-height`; only scrollport padding grows. */
 
         .cw-view-viewer-shell:not([data-raw]) .view-viewer {
             flex: 1 1 auto;
