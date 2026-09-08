@@ -83,6 +83,10 @@ export function createViewerToolbar(): HTMLElement {
                     <ui-icon class="view-viewer__toolbar-icon" icon="floppy-disk" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
                     <span>Save</span>
                 </button>
+                <button class="view-viewer__btn" data-action="new" type="button" title="New document — clear content and path; Save will ask where">
+                    <ui-icon class="view-viewer__toolbar-icon" icon="file-plus" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>New</span>
+                </button>
             </div>
             <div class="view-viewer__toolbar-center" role="presentation">
                 <span class="view-viewer__toolbar-title" data-viewer-toolbar-title></span>

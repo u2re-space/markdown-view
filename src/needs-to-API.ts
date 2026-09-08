@@ -179,6 +179,8 @@ export function warmViewerMarkdownEngine(): void {
 interface ViewerState {
     content: string;
     filename?: string;
+    /** Path-bar target; restored after restart unless a route/handoff source wins. */
+    source?: string;
     scrollPosition?: number;
 }
 
@@ -387,6 +389,11 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         /* WHY: applyRouteParams (share / SKU handoff) must win over the last saved document. */
         const savedState = this.stateManager.load();
         this.contentRef.value = options.initialContent || savedState?.content || DEFAULT_CONTENT;
+        if (!options.filename && savedState?.filename) this.options.filename = savedState.filename;
+        if (!options.source && savedState?.source && !isIngressSourceToken(savedState.source)) {
+            this.sourceUrl = this.normalizeSourceUrl(savedState.source);
+            this.options.source = savedState.source;
+        }
         this.applyRouteParams(options.params);
         if (!options.initialContent) {
             const fromParams = (options.params?.content as string | undefined)?.trim?.();
@@ -423,6 +430,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.subscribeContentRefToCurrentTargets(renderTarget, rawTarget);
 
         this.refreshDocumentTheme();
+        this.syncOpenedPath(this.sourceUrl);
         return this.element;
     }
 
@@ -449,6 +457,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.syncOutlineToolbarState();
         this.syncToolbarDocumentTitle();
         this.refreshDocumentTheme();
+        this.syncOpenedPath(this.sourceUrl);
     }
 
     /**
@@ -488,6 +497,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.subscribeContentRefToCurrentTargets(renderTarget, rawTarget);
 
         this.refreshDocumentTheme();
+        this.syncOpenedPath(this.sourceUrl);
         void this.pullCapacitorPendingOpen();
     }
 
@@ -1603,6 +1613,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 case "save":
                     void this.handleSave();
                     break;
+                case "new":
+                    this.handleNewDocument();
+                    break;
                 case "export-docx":
                     void this.handleExportDocx();
                     break;
@@ -1626,6 +1639,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         pathForm?.addEventListener("submit", (e) => {
             e.preventDefault();
             void this.goPathFromBar();
+        });
+        this.pathInputEl()?.addEventListener("change", () => {
+            this.persistViewerPathFromBar();
         });
 
         const rawSource = this.rawSourceEl(rawElement);
@@ -1754,6 +1770,22 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         return String(this.pathInputEl()?.value || "").trim();
     }
 
+    private persistableSource(): string | undefined {
+        const raw = this.pathInputValue() || this.sourceUrl || this.options.source || "";
+        const next = String(raw).trim();
+        if (!next || isIngressSourceToken(next)) return undefined;
+        return next;
+    }
+
+    /* WHY: path is not always in contentRef — persist on change / Go / Save, not only markdown writes. */
+    private persistViewerPathFromBar(): void {
+        const raw = this.pathInputValue();
+        if (isIngressSourceToken(raw)) return;
+        this.sourceUrl = this.normalizeSourceUrl(raw);
+        this.options.source = raw || undefined;
+        this.saveState();
+    }
+
     private syncPathBackButton(): void {
         const btn = this.queryViewerSlotted('[data-action="go-back"]') as HTMLButtonElement | null;
         if (btn) btn.disabled = this.pathHistoryIndex <= 0;
@@ -1776,7 +1808,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private syncOpenedPath(source?: string | null): void {
         const next = String(source || this.sourceUrl || "").trim();
         const input = this.pathInputEl();
-        if (input && next && input.value !== next) input.value = next;
+        if (input && input.value !== next) input.value = next;
         if (this.suppressPathHistory || !next) {
             this.syncPathBackButton();
             return;
@@ -1802,6 +1834,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         const src = native || toFetchableMarkdownUrl(candidate);
         const ok = await this.openMarkdownFromUrl(src);
         if (!ok && !native) this.showMessage("Could not open that path or URL");
+        this.saveState();
     }
 
     private async refreshPathFromBar(): Promise<void> {
@@ -1809,6 +1842,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         if (src) {
             const ok = await this.openMarkdownFromUrl(src);
             if (!ok) this.showMessage("Refresh failed");
+            this.saveState();
             return;
         }
         this.onRefresh();
@@ -2233,16 +2267,19 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             if (target && await this.tryWriteVirtualPath(target, content, filename)) {
                 this.showMessage(`Saved ${filename}`);
                 this.options.onDownload?.(content, filename);
+                this.saveState();
                 return;
             }
             if (this.rememberedSaveHandle && await writeMarkdownToHandle(this.rememberedSaveHandle, content)) {
                 this.showMessage(`Saved ${filename}`);
                 this.options.onDownload?.(content, filename);
+                this.saveState();
                 return;
             }
             if (this.rememberedNativeWriteUri && await writeNativeStorageUri(this.rememberedNativeWriteUri, content)) {
                 this.showMessage(`Saved ${filename}`);
                 this.options.onDownload?.(content, filename);
+                this.saveState();
                 return;
             }
         } catch {
@@ -2260,8 +2297,10 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 if (created.cancelled) return;
                 if (created.ok) {
                     if (created.uri) this.rememberedNativeWriteUri = created.uri;
+                    this.rememberOpenedWriteBack(created.uri, created.uri);
                     this.showMessage(`Saved ${filename}`);
                     this.options.onDownload?.(content, filename);
+                    this.saveState();
                     return;
                 }
             } catch {
@@ -2290,6 +2329,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             outcome.result === "shared" ? `Shared ${filename}` : `Saved ${filename}`
         );
         this.options.onDownload?.(content, filename);
+        this.saveState();
     }
 
     private handleDownload(): void {
@@ -3105,8 +3145,27 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private saveState(): void {
         this.stateManager.save({
             content: this.flushRawEditor(),
-            filename: this.options.filename
+            filename: this.options.filename,
+            source: this.persistableSource()
         });
+    }
+
+    private handleNewDocument(): void {
+        this.rememberedSaveHandle = null;
+        this.rememberedNativeWriteUri = null;
+        this.sourceUrl = null;
+        this.options.source = undefined;
+        this.options.filename = undefined;
+        this.rawEditorDirty = false;
+        this.binaryPreviewActive = false;
+        this.pendingBinaryPreview = null;
+        this.pathHistory = [];
+        this.pathHistoryIndex = -1;
+        this.contentRef.value = "";
+        this.syncOpenedPath("");
+        this.syncPathBackButton();
+        this.saveState();
+        this.repaintMarkdown();
     }
 
     private showMessage(message: string): void {
