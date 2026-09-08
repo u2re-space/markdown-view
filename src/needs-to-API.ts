@@ -115,8 +115,37 @@ const ensureViewerIconRuntime = (): void => {
     }
 };
 
-const writeClipboardText = (text: string): Promise<void> => {
-    return navigator?.clipboard?.writeText?.(text) ?? Promise.resolve(void 0);
+/* WHY: `writeText()` resolves void — callers must not treat `!result?.ok` as failure. */
+const writeClipboardText = async (text: string): Promise<boolean> => {
+    try {
+        const { writeClipboardTextToDevice } = await import("com/routing/native/clipboard-device");
+        await writeClipboardTextToDevice(text);
+        return true;
+    } catch {
+        /* navigator / execCommand below */
+    }
+    try {
+        if (typeof navigator?.clipboard?.writeText === "function") {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+    } catch {
+        /* gesture lost on Capacitor — last-ditch execCommand */
+    }
+    try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand("copy");
+        ta.remove();
+        return ok;
+    } catch {
+        return false;
+    }
 };
 
 type ViewerMarkdownSettings = {
@@ -421,6 +450,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.setupEventHandlers(rawTarget || undefined);
         this.syncOutlineToolbarState();
         this.syncToolbarDocumentTitle();
+        this.syncToolbarModeGroups(this.rawMode);
 
         this.flushPendingBinaryPreview();
         if (!this.binaryPreviewActive && renderTarget) {
@@ -456,6 +486,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
         this.syncOutlineToolbarState();
         this.syncToolbarDocumentTitle();
+        this.syncToolbarModeGroups(this.rawMode);
         this.refreshDocumentTheme();
         this.syncOpenedPath(this.sourceUrl);
     }
@@ -488,6 +519,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.setupEventHandlers(rawTarget || undefined);
         this.syncOutlineToolbarState();
         this.syncToolbarDocumentTitle();
+        this.syncToolbarModeGroups(this.rawMode);
 
         this.flushPendingBinaryPreview();
         if (!this.binaryPreviewActive && renderTarget) {
@@ -689,14 +721,34 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     /** Syncs raw/rendered layout: shell + content `data-raw` drives CSS (toolbar + raw vs slotted markdown). */
     private syncViewerRawMode(raw: boolean): void {
         const shell = this.element;
-        if (!shell?.classList.contains("cw-view-viewer-shell")) return;
-        shell.toggleAttribute("data-raw", raw);
+        if (shell?.classList.contains("cw-view-viewer-shell")) {
+            shell.toggleAttribute("data-raw", raw);
+            const content = shell.querySelector("[data-viewer-content]");
+            if (raw) content?.setAttribute("data-raw", "");
+            else content?.removeAttribute("data-raw");
+        }
         this.slotProjectingHost?.toggleAttribute("data-raw", raw);
-        const content = shell.querySelector("[data-viewer-content]");
-        if (raw) {
-            content?.setAttribute("data-raw", "");
-        } else {
-            content?.removeAttribute("data-raw");
+        this.syncToolbarModeGroups(raw);
+    }
+
+    /* WHY: unlayered `.toolbar-left { display:flex }` beats layered hide; Capacitor
+     * chrome is light DOM so `:host([data-raw])` in the adopted sheet never matches. */
+    private syncToolbarModeGroups(raw: boolean): void {
+        const mode = raw ? "edit" : "view";
+        const roots: ParentNode[] = [];
+        if (this.element) roots.push(this.element);
+        if (this.slotProjectingHost) roots.push(this.slotProjectingHost);
+        const shadow = this.slotProjectingHost?.shadowRoot;
+        if (shadow) roots.push(shadow);
+        for (const root of roots) {
+            const bar = root.querySelector("[data-viewer-toolbar]");
+            if (!(bar instanceof HTMLElement)) continue;
+            bar.dataset.toolbarMode = mode;
+            bar.querySelectorAll<HTMLElement>("[data-toolbar-mode]").forEach((el) => {
+                const on = el.dataset.toolbarMode === mode;
+                el.hidden = !on;
+                el.style.setProperty("display", on ? "flex" : "none", "important");
+            });
         }
     }
 
@@ -1588,7 +1640,10 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     void this.handlePasteFromToolbar();
                     break;
                 case "copy":
-                    this.handleCopy();
+                    void this.handleCopy();
+                    break;
+                case "select-all":
+                    this.handleSelectAll();
                     break;
                 case "toggle-raw":
                     this.rawMode = !this.rawMode;
@@ -2023,21 +2078,84 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         input.click();
     }
 
+    private rawSelectionText(): string {
+        const source = this.rawSourceEl();
+        if (!source) return "";
+        const root = source.getRootNode() as Document | ShadowRoot;
+        const sel = (root as ShadowRoot & { getSelection?: () => Selection | null }).getSelection?.()
+            ?? document.getSelection();
+        if (!sel || sel.isCollapsed || !sel.rangeCount) return "";
+        const range = sel.getRangeAt(0);
+        const node = range.commonAncestorContainer;
+        if (node !== source && !source.contains(node)) return "";
+        return sel.toString();
+    }
+
+    private handleSelectAll(): void {
+        const source = this.rawSourceEl();
+        if (!source) return;
+        source.focus({ preventScroll: true });
+        const root = source.getRootNode() as Document | ShadowRoot;
+        const sel = (root as ShadowRoot & { getSelection?: () => Selection | null }).getSelection?.()
+            ?? document.getSelection();
+        if (!sel) return;
+        const range = document.createRange();
+        range.selectNodeContents(source);
+        sel.removeAllRanges();
+        sel.addRange(range);
+    }
+
+    private insertTextInRawEditor(text: string): boolean {
+        const source = this.rawSourceEl();
+        if (!source) return false;
+        source.focus({ preventScroll: true });
+        try {
+            if (document.execCommand("insertText", false, text)) {
+                this.rawEditorDirty = true;
+                return true;
+            }
+        } catch {
+            /* Selection API fallback */
+        }
+        const root = source.getRootNode() as Document | ShadowRoot;
+        const sel = (root as ShadowRoot & { getSelection?: () => Selection | null }).getSelection?.()
+            ?? document.getSelection();
+        if (sel && sel.rangeCount) {
+            const range = sel.getRangeAt(0);
+            range.deleteContents();
+            range.insertNode(document.createTextNode(text));
+            range.collapse(false);
+            sel.removeAllRanges();
+            sel.addRange(range);
+        } else if (source instanceof HTMLTextAreaElement) {
+            const start = source.selectionStart ?? source.value.length;
+            const end = source.selectionEnd ?? start;
+            source.value = `${source.value.slice(0, start)}${text}${source.value.slice(end)}`;
+        } else {
+            source.append(text);
+        }
+        this.rawEditorDirty = true;
+        return true;
+    }
+
     private async handleCopy(): Promise<void> {
-        const raw = this.flushRawEditor() || "";
+        const selected = this.rawMode ? this.rawSelectionText() : "";
+        if (this.rawMode && !selected) {
+            this.showMessage("Nothing selected");
+            return;
+        }
+        const raw = selected || this.flushRawEditor() || "";
         if (!raw.trim()) {
             this.showMessage("No content to copy");
             return;
         }
         try {
-            const result: { ok: false; error: string } | undefined = await Promise.race([
+            const ok = await Promise.race([
                 writeClipboardText(raw),
-                new Promise<{ ok: false; error: string }>((resolve) =>
-                    globalThis.setTimeout(() => resolve({ ok: false, error: "Clipboard timeout" }), 3500)
-                )
-            ]) as { ok: false; error: string } | undefined;
-            if (!result?.ok) throw new Error(result?.error || "Clipboard write failed");
-            this.showMessage("Copied raw content to clipboard");
+                new Promise<boolean>((resolve) => globalThis.setTimeout(() => resolve(false), 3500))
+            ]);
+            if (!ok) throw new Error("Clipboard write failed");
+            this.showMessage(selected ? "Copied selection" : "Copied raw content to clipboard");
             this.options.onCopy?.(raw);
         } catch (error) {
             console.error("[ViewerView] Failed to copy:", error);
@@ -2062,13 +2180,11 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             return;
         }
         try {
-            const result: { ok: false; error: string } | undefined = await Promise.race([
+            const ok = await Promise.race([
                 writeClipboardText(text),
-                new Promise<{ ok: false; error: string }>((resolve) =>
-                    globalThis.setTimeout(() => resolve({ ok: false, error: "Clipboard timeout" }), 3500)
-                )
-            ]) as { ok: false; error: string } | undefined;
-            if (!result?.ok) throw new Error(result?.error || "Clipboard write failed");
+                new Promise<boolean>((resolve) => globalThis.setTimeout(() => resolve(false), 3500))
+            ]);
+            if (!ok) throw new Error("Clipboard write failed");
             this.showMessage("Copied rendered text to clipboard");
         } catch {
             this.showMessage("Failed to copy rendered text");
@@ -2738,6 +2854,12 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 this.showMessage("Clipboard is empty or access denied");
                 return;
             }
+            if (this.rawMode && files.length === 0 && text) {
+                if (this.insertTextInRawEditor(text)) {
+                    this.showMessage("Pasted at selection");
+                    return;
+                }
+            }
             await this.ingestPastedPayload(files, text);
         } catch (error) {
             console.error("[ViewerView] Paste from toolbar failed:", error);
@@ -3156,16 +3278,41 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.sourceUrl = null;
         this.options.source = undefined;
         this.options.filename = undefined;
-        this.rawEditorDirty = false;
         this.binaryPreviewActive = false;
         this.pendingBinaryPreview = null;
         this.pathHistory = [];
         this.pathHistoryIndex = -1;
-        this.contentRef.value = "";
+        this.rawEditorDirty = false;
+        this.rawMode = true;
+        const raw = this.rawEditorEl();
+        const renderTarget = this.queryViewerSlotted("[data-render-target]");
+        if (renderTarget) renderTarget.hidden = true;
+        this.setRawEditorVisible(true, raw);
+        this.syncViewerRawMode(true);
+        /* WHY: saveState → flushRawEditor would write the old draft back into contentRef. */
+        if (isRawEditorHost(raw) && typeof (raw as { clearDraft?: () => void }).clearDraft === "function") {
+            (raw as { clearDraft: () => void }).clearDraft();
+        } else {
+            const source = this.rawSourceEl(raw);
+            if (source instanceof HTMLTextAreaElement) source.value = "\n";
+            else if (source) source.textContent = "\n";
+        }
+        this.contentRef.value = "\n";
         this.syncOpenedPath("");
         this.syncPathBackButton();
         this.saveState();
-        this.repaintMarkdown();
+        if (isRawEditorHost(raw) && typeof (raw as { placeCaretAtStart?: () => void }).placeCaretAtStart === "function") {
+            (raw as { placeCaretAtStart: () => void }).placeCaretAtStart();
+        } else {
+            this.handleSelectAll();
+            const sel = document.getSelection();
+            if (sel?.rangeCount) {
+                const range = sel.getRangeAt(0);
+                range.collapse(true);
+                sel.removeAllRanges();
+                sel.addRange(range);
+            }
+        }
     }
 
     private showMessage(message: string): void {

@@ -1047,6 +1047,20 @@
         min-inline-size: 0;
     }
 
+    /* WHY: unlayered — @layer hide lost to the flex rule above. :host covers shadow. */
+    .view-viewer__toolbar [data-toolbar-mode="edit"],
+    .view-viewer__toolbar-hidden,
+    .view-viewer__toolbar[data-toolbar-mode="view"] [data-toolbar-mode="edit"],
+    .view-viewer__toolbar[data-toolbar-mode="edit"] [data-toolbar-mode="view"],
+    :host([data-raw]) .view-viewer__toolbar [data-toolbar-mode="view"] {
+        display: none !important;
+    }
+
+    .view-viewer__toolbar[data-toolbar-mode="edit"] [data-toolbar-mode="edit"],
+    :host([data-raw]) .view-viewer__toolbar [data-toolbar-mode="edit"] {
+        display: flex !important;
+    }
+
     .view-viewer__toolbar-center {
         flex: 1 1 auto;
         min-inline-size: 0;
@@ -4000,6 +4014,20 @@
             justify-content: flex-end;
             padding-inline-start: calc(var(--view-toolbar-gap, 0.5rem) + 0.25rem);
             margin-inline-start: 0;
+        }
+
+        /* WHY: second row swaps edit vs view groups; Attach/Style stay in DOM, hidden. */
+        .view-viewer__toolbar [data-toolbar-mode="edit"],
+        .view-viewer__toolbar-hidden {
+            display: none;
+        }
+
+        [data-raw] .view-viewer__toolbar [data-toolbar-mode="edit"] {
+            display: flex;
+        }
+
+        [data-raw] .view-viewer__toolbar [data-toolbar-mode="view"] {
+            display: none;
         }
 
         button.view-viewer__btn {

@@ -45,10 +45,6 @@ export function createViewerPathBar(): HTMLElement {
                     <ui-icon class="view-viewer__toolbar-icon" icon="folder-open" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
                     <span>Open</span>
                 </button>
-                <button class="view-viewer__btn" data-action="bind-assets" type="button" title="Bind folder for images and other relative assets">
-                    <ui-icon class="view-viewer__toolbar-icon" icon="folder" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                    <span>Assets</span>
-                </button>
             </div>
         </div>
     ` as HTMLElement;
@@ -62,47 +58,63 @@ export function createViewerToolbar(): HTMLElement {
             role="toolbar"
             aria-label="Markdown document actions"
         >
-            <div class="view-viewer__toolbar-left" role="group" aria-label="Document">
-                <button class="view-viewer__btn" data-action="toggle-raw" type="button" title="Toggle raw/rendered view">
-                    <ui-icon class="view-viewer__toolbar-icon" icon="code" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                    <span>Raw</span>
+            <div class="view-viewer__toolbar-left" data-toolbar-mode="edit" role="group" aria-label="Edit">
+                <button class="view-viewer__btn" data-action="toggle-raw" type="button" title="Switch to rendered view">
+                    <ui-icon class="view-viewer__toolbar-icon" icon="eye" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>ToView</span>
                 </button>
-                <button class="view-viewer__btn" data-action="copy" type="button" title="Copy raw content">
+                <button class="view-viewer__btn" data-action="select-all" type="button" title="Select all in the editor">
+                    <ui-icon class="view-viewer__toolbar-icon" icon="selection-all" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>SelectAll</span>
+                </button>
+                <button class="view-viewer__btn" data-action="copy" type="button" title="Copy selected text">
                     <ui-icon class="view-viewer__toolbar-icon" icon="copy" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
                     <span>Copy</span>
                 </button>
-                <button class="view-viewer__btn" data-action="paste" type="button" title="Paste from clipboard (mobile-friendly)" aria-label="Paste from clipboard">
+                <button class="view-viewer__btn" data-action="paste" type="button" title="Paste at the selection" aria-label="Paste at the selection">
                     <ui-icon class="view-viewer__toolbar-icon" icon="clipboard-text" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
                     <span>Paste</span>
                 </button>
-                <button class="view-viewer__btn" data-action="download" type="button" title="Download as markdown">
-                    <ui-icon class="view-viewer__toolbar-icon" icon="download" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                    <span>Download</span>
+            </div>
+            <div class="view-viewer__toolbar-left" data-toolbar-mode="view" role="group" aria-label="View">
+                <button class="view-viewer__btn" data-action="toggle-raw" type="button" title="Switch to source">
+                    <ui-icon class="view-viewer__toolbar-icon" icon="code" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>ToCode</span>
                 </button>
-                <button class="view-viewer__btn" data-action="save" type="button" title="Save to the path bar target, or pick a file">
-                    <ui-icon class="view-viewer__toolbar-icon" icon="floppy-disk" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                    <span>Save</span>
+                <button class="view-viewer__btn" data-action="copy-rendered" type="button" title="Copy rendered text">
+                    <ui-icon class="view-viewer__toolbar-icon" icon="text-t" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>CopyText</span>
                 </button>
-                <button class="view-viewer__btn" data-action="new" type="button" title="New document — clear content and path; Save will ask where">
-                    <ui-icon class="view-viewer__toolbar-icon" icon="file-plus" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                    <span>New</span>
+                <button class="view-viewer__btn" data-action="copy" type="button" title="Copy raw markdown">
+                    <ui-icon class="view-viewer__toolbar-icon" icon="copy" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>Copy</span>
+                </button>
+                <button class="view-viewer__btn" data-action="paste" type="button" title="Paste from clipboard" aria-label="Paste from clipboard">
+                    <ui-icon class="view-viewer__toolbar-icon" icon="clipboard-text" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>Paste</span>
                 </button>
             </div>
             <div class="view-viewer__toolbar-center" role="presentation">
                 <span class="view-viewer__toolbar-title" data-viewer-toolbar-title></span>
             </div>
-            <div class="view-viewer__toolbar-right" role="group" aria-label="Output and workspace">
-                <button class="view-viewer__btn" data-action="attach" type="button" title="Attach to Work Center">
-                    <ui-icon class="view-viewer__toolbar-icon" icon="paperclip" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                    <span>Attach</span>
+            <div class="view-viewer__toolbar-right" data-toolbar-mode="edit" role="group" aria-label="Edit file">
+                <button class="view-viewer__btn" data-action="new" type="button" title="New document — clear content and path; Save will ask where">
+                    <ui-icon class="view-viewer__toolbar-icon" icon="file-plus" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>New</span>
                 </button>
-                <button class="view-viewer__btn" data-action="open-style-settings" type="button" title="Markdown styling, modules, plugins">
-                    <ui-icon class="view-viewer__toolbar-icon" icon="paint-roller" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                    <span>Style</span>
+                <button class="view-viewer__btn" data-action="save" type="button" title="Save to the path bar target, or pick a file">
+                    <ui-icon class="view-viewer__toolbar-icon" icon="floppy-disk" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>Save</span>
                 </button>
-                <button class="view-viewer__btn" data-action="copy-rendered" type="button" title="Copy rendered text">
-                    <ui-icon class="view-viewer__toolbar-icon" icon="text-t" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                    <span>Copy text</span>
+            </div>
+            <div class="view-viewer__toolbar-right" data-toolbar-mode="view" role="group" aria-label="View export">
+                <button class="view-viewer__btn" data-action="bind-assets" type="button" title="Bind folder for images and other relative assets">
+                    <ui-icon class="view-viewer__toolbar-icon" icon="folder" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>Assets</span>
+                </button>
+                <button class="view-viewer__btn" data-action="download" type="button" title="Download as markdown">
+                    <ui-icon class="view-viewer__toolbar-icon" icon="download" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                    <span>Download</span>
                 </button>
                 <button class="view-viewer__btn" data-action="export-docx" type="button" title="Export as DOCX">
                     <ui-icon class="view-viewer__toolbar-icon" icon="file-doc" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
@@ -111,6 +123,14 @@ export function createViewerToolbar(): HTMLElement {
                 <button class="view-viewer__btn" data-action="print" type="button" title="Print content">
                     <ui-icon class="view-viewer__toolbar-icon" icon="printer" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
                     <span>Print</span>
+                </button>
+            </div>
+            <div class="view-viewer__toolbar-hidden" data-toolbar-hidden hidden>
+                <button class="view-viewer__btn" data-action="attach" type="button" title="Attach to Work Center" tabindex="-1">
+                    <span>Attach</span>
+                </button>
+                <button class="view-viewer__btn" data-action="open-style-settings" type="button" title="Markdown styling, modules, plugins" tabindex="-1">
+                    <span>Style</span>
                 </button>
             </div>
         </div>
