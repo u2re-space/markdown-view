@@ -148,12 +148,18 @@ export class MarkdownViewFrameElement extends HTMLElement {
                     overscroll-behavior: contain;
                 }
 
-                :host(:not([data-raw])) .cw-view-viewer__slot-raw {
+                /* WHY: data-raw is stamped on cw-view-viewer / shell, not this frame. */
+                :host-context([data-raw]) .cw-view-viewer__slot-default {
                     display: none !important;
                 }
 
-                :host([data-raw]) .cw-view-viewer__slot-default {
+                .cw-view-viewer__slot-raw {
                     display: none !important;
+                }
+
+                :host-context([data-raw]) .cw-view-viewer__slot-raw {
+                    display: flex !important;
+                    flex-direction: column;
                 }
             `;
             const panel = createMarkdownViewFrame();

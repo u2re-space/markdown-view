@@ -34,9 +34,13 @@ import { createViewerChrome } from "./ts/Toolbar";
 import { createRawEditorHost, isRawEditorHost } from "./ts/Viewer";
 import {
     createNativeStorageDocument,
+    ensureNativeStorageProvide,
     installNativeShowSaveFilePicker,
     isNativeStorageAvailable,
+    loadCapacitorDocument,
     nativeUriFromSaveHandle,
+    openNativeStorageDocument,
+    readNativeStorageUri,
     toNativeStorageVirtualPath,
     writeNativeStorageFile,
     writeNativeStorageUri,
@@ -289,6 +293,12 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     /** When mounted under `cw-view-viewer`, slotted raw/prose are light children of this host. */
     private slotProjectingHost: HTMLElement | null = null;
     private contentRef = ref("");
+    /**
+     * Plain string SoT for paint. WHY: `contentRef.value` can read back "" on Capacitor
+     * after a write (CE + object.ts ref) — that always painted Empty document.
+     */
+    private lastGoodBody = DEFAULT_CONTENT;
+    private userClearedDocument = false;
     /** Single subscription: `affected()` returns a disposer — re-render without dispose stacks callbacks on stale DOM refs. */
     private contentRefSubscriptionDispose: (() => void) | undefined | null = null;
     private renderSeq = 0;
@@ -319,6 +329,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     /** INVARIANT: RAW `pre > code` is the draft; flush before copy / save / render. */
     private rawMode = false;
     private rawEditorDirty = false;
+    /** WHY: assignRaw + highlight fires `input` — must not mark dirty mid-paint. */
+    private paintingRaw = false;
     private rememberedSaveHandle: FileSystemFileHandle | null = null;
     private rememberedNativeWriteUri: string | null = null;
     /** Share/launch sidecar images keyed by basename and relative name. */
@@ -386,9 +398,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.disposeContentRefSubscription();
         const dispose = affected(this.contentRef, () => {
             if (renderTarget) {
-                this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
+                this.renderMarkdown(this.paintBody(), renderTarget, rawTarget);
             }
-            this.saveState();
+            /* WHY: saveState here flushed an empty raw host (highlight `input`) over the file. */
         });
         this.contentRefSubscriptionDispose = typeof dispose === "function" ? () => { dispose(); } : null;
     }
@@ -417,7 +429,10 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
         /* WHY: applyRouteParams (share / SKU handoff) must win over the last saved document. */
         const savedState = this.stateManager.load();
-        this.contentRef.value = options.initialContent || savedState?.content || DEFAULT_CONTENT;
+        const savedBody = String(savedState?.content || "").trim();
+        const initial = String(options.initialContent || savedBody || DEFAULT_CONTENT);
+        this.lastGoodBody = initial.trim() ? initial : DEFAULT_CONTENT;
+        this.contentRef.value = this.lastGoodBody;
         if (!options.filename && savedState?.filename) this.options.filename = savedState.filename;
         if (!options.source && savedState?.source && !isIngressSourceToken(savedState.source)) {
             this.sourceUrl = this.normalizeSourceUrl(savedState.source);
@@ -427,6 +442,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         if (!options.initialContent) {
             const fromParams = (options.params?.content as string | undefined)?.trim?.();
             if (fromParams) {
+                this.rememberPaintBody(fromParams);
                 this.contentRef.value = fromParams;
             }
         }
@@ -454,13 +470,15 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
         this.flushPendingBinaryPreview();
         if (!this.binaryPreviewActive && renderTarget) {
-            this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
+            this.renderMarkdown(this.paintBody(), renderTarget, rawTarget);
         }
 
         this.subscribeContentRefToCurrentTargets(renderTarget, rawTarget);
 
         this.refreshDocumentTheme();
         this.syncOpenedPath(this.sourceUrl);
+        /* WHY: shell `render()` is the Capacitor first paint — do not wait only for onShow. */
+        void this.pullCapacitorPendingOpen().then(() => this.reloadNativeSourceIfEmpty());
         return this.element;
     }
 
@@ -482,7 +500,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         const rawTarget = this.queryViewerSlotted("[data-raw-target]") as HTMLElement | null;
         if (renderTarget) {
             this.subscribeContentRefToCurrentTargets(renderTarget, rawTarget);
-            this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
+            this.renderMarkdown(this.paintBody(), renderTarget, rawTarget);
         }
         this.syncOutlineToolbarState();
         this.syncToolbarDocumentTitle();
@@ -523,14 +541,14 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
         this.flushPendingBinaryPreview();
         if (!this.binaryPreviewActive && renderTarget) {
-            this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
+            this.renderMarkdown(this.paintBody(), renderTarget, rawTarget);
         }
 
         this.subscribeContentRefToCurrentTargets(renderTarget, rawTarget);
 
         this.refreshDocumentTheme();
         this.syncOpenedPath(this.sourceUrl);
-        void this.pullCapacitorPendingOpen();
+        void this.pullCapacitorPendingOpen().then(() => this.reloadNativeSourceIfEmpty());
     }
 
     getToolbar(): HTMLElement | null {
@@ -556,6 +574,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             this.options.source = source || undefined;
         }
         this.rawEditorDirty = false;
+        this.rememberPaintBody(content);
         this.contentRef.value = content;
         this.syncToolbarDocumentTitle();
         this.syncOpenedPath(this.sourceUrl);
@@ -563,11 +582,26 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.repaintMarkdown();
     }
 
+    private rememberPaintBody(content: string): void {
+        const next = String(content ?? "");
+        if (!next.trim()) return;
+        this.lastGoodBody = next;
+        this.userClearedDocument = false;
+    }
+
+    /** INVARIANT: Capacitor never paints Empty document from a blank `contentRef` read. */
+    private paintBody(): string {
+        if (this.userClearedDocument) return String(this.contentRef.value || "");
+        const cur = String(this.contentRef.value || "");
+        if (cur.trim()) return cur;
+        return this.lastGoodBody || DEFAULT_CONTENT;
+    }
+
     private repaintMarkdown(): void {
         const renderTarget = this.queryViewerSlotted("[data-render-target]");
         if (!renderTarget) return;
         const rawTarget = this.queryViewerSlotted("[data-raw-target]") as HTMLElement | null;
-        this.renderMarkdown(this.contentRef.value, renderTarget, rawTarget);
+        this.renderMarkdown(this.paintBody(), renderTarget, rawTarget);
     }
 
     /**
@@ -576,6 +610,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private ingestOpenedMarkdownBody(body: string, filename?: string, source?: string | null): void {
         this.binaryPreviewActive = false;
         this.pendingBinaryPreview = null;
+        if (!String(body || "").trim()) return;
         if (body.length > 0 && textIngressLooksCorrupt(body)) {
             this.setContent(
                 "> This payload does not look like UTF-8 markdown (binary file or unsupported format).\n>\n> Open a `.md` / `.txt` file, paste as plain text, or attach binaries via Work Center.\n\n",
@@ -585,6 +620,20 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             return;
         }
         this.setContent(body, filename, source ?? undefined);
+        const raw = this.rawEditorEl();
+        if (isRawEditorHost(raw)) raw.value = body;
+        this.saveState();
+    }
+
+    /** Capacitor `document:load` → editor buffer. */
+    private applyCapacitorLoadedDocument(
+        doc: { content: string; name: string; uri?: string; virtualPath?: string },
+        filename?: string
+    ): void {
+        const source = doc.virtualPath || doc.uri || null;
+        this.ingestOpenedMarkdownBody(doc.content, filename || doc.name, source);
+        this.rememberOpenedWriteBack(doc.uri || null, doc.virtualPath || null);
+        if (source) this.syncOpenedPath(source);
     }
 
     /**
@@ -728,6 +777,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             else content?.removeAttribute("data-raw");
         }
         this.slotProjectingHost?.toggleAttribute("data-raw", raw);
+        this.slotProjectingHost?.querySelector("cw-markdown-view-frame")?.toggleAttribute("data-raw", raw);
         this.syncToolbarModeGroups(raw);
     }
 
@@ -867,11 +917,16 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 }
                 const lang = languageFromFilename(this.options.filename || this.sourceUrl || "");
                 if (isRawEditorHost(rawTarget)) {
-                    rawTarget.value = c;
+                    this.paintingRaw = true;
                     try {
-                        rawTarget.highlight(lang);
-                    } catch (error) {
-                        console.warn("[ViewerView] raw highlight skipped", error);
+                        rawTarget.value = c;
+                        try {
+                            rawTarget.highlight(lang);
+                        } catch (error) {
+                            console.warn("[ViewerView] raw highlight skipped", error);
+                        }
+                    } finally {
+                        this.paintingRaw = false;
                     }
                     return;
                 }
@@ -888,13 +943,18 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 if (!paintHost.isContentEditable) {
                     paintHost.setAttribute("contenteditable", "plaintext-only");
                 }
-                if (paintHost.textContent !== c) paintHost.textContent = c;
+                this.paintingRaw = true;
                 try {
-                    /* WHY: raw </> is the whole document — a gutter overlay + RO
-                     * rewrites line-height while the editor is hidden, then pumps height every frame. */
-                    attachCodeHighlight(paintHost, { language: lang, lineNumbers: false });
-                } catch (error) {
-                    console.warn("[ViewerView] raw highlight skipped", error);
+                    if (paintHost.textContent !== c) paintHost.textContent = c;
+                    try {
+                        /* WHY: raw </> is the whole document — a gutter overlay + RO
+                         * rewrites line-height while the editor is hidden, then pumps height every frame. */
+                        attachCodeHighlight(paintHost, { language: lang, lineNumbers: false });
+                    } catch (error) {
+                        console.warn("[ViewerView] raw highlight skipped", error);
+                    }
+                } finally {
+                    this.paintingRaw = false;
                 }
             };
             if (c.length > VIEWER_RAW_TEXTCONTENT_DEFER_CHARS) {
@@ -905,9 +965,23 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
 
         // Fast path: empty/whitespace content should never run marked/DOMPurify (avoids hangs + flicker).
-        const normalized = String(content ?? "");
+        let normalized = String(content ?? "");
+        if (!normalized.trim() && !this.userClearedDocument) {
+            normalized = this.lastGoodBody || DEFAULT_CONTENT;
+            content = normalized;
+        }
         if (!normalized.trim() && !this.rawMode) {
             if (seq !== this.renderSeq) return;
+            /* WHY: Capacitor WebView treated a blank contentRef as Empty document on every open. */
+            if (isNativeStorageAvailable()) {
+                this.rawMode = true;
+                this.syncViewerRawMode(true);
+                this.setRawEditorVisible(true, rawTarget);
+                renderTarget.hidden = true;
+                renderTarget.removeAttribute("aria-busy");
+                this.syncToolbarDocumentTitle();
+                return;
+            }
             this.syncViewerRawMode(false);
             renderTarget.hidden = false;
             this.setRawEditorVisible(false, rawTarget);
@@ -1005,6 +1079,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         if (!raw) return null;
         const native = toNativeStorageVirtualPath(raw);
         if (native) return native;
+        /* WHY: `new URL(content://…)` re-encodes Material Files FileProvider paths. */
+        if (/^(?:content|file):/i.test(raw)) return raw;
         if (isVirtualFsPath(raw)) {
             return raw.startsWith("/") ? raw : `/${raw}`;
         }
@@ -1201,9 +1277,15 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         if (contentParam.trim()) {
             this.contentRef.value = contentParam;
         } else if (sourceParam) {
-            const src = toNativeStorageVirtualPath(String(sourceParam).trim()) || String(sourceParam).trim();
+            const rawSrc = String(sourceParam).trim();
+            const src = toNativeStorageVirtualPath(rawSrc) || rawSrc;
+            if (
+                isNativeStorageAvailable()
+                && (/^(?:content|file):/i.test(rawSrc) || /^\/(?:sdcard|saf)(?:\/|$)/i.test(src))
+            ) {
+                void this.openMarkdownFromUrl(rawSrc, filenameParam ? String(filenameParam) : undefined);
+            } else if (isVirtualFsPath(src) || /^\/assets(?:\/|$)/i.test(src) || /^\/(?:sdcard|saf)(?:\/|$)/i.test(src) || /^(?:content|file):/i.test(rawSrc)) {
             /* WHY: `/assets/` is not OPFS. provide() fetches same-origin; without this the window stayed on DEFAULT_CONTENT. */
-            if (isVirtualFsPath(src) || /^\/assets(?:\/|$)/i.test(src) || /^\/(?:sdcard|saf)(?:\/|$)/i.test(src)) {
                 void (async () => {
                     if (/^\/(?:sdcard|saf)(?:\/|$)/i.test(src)) {
                         try {
@@ -1214,6 +1296,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                         }
                     }
                     let file = asProvidedFile(await provide(src).catch(() => null));
+                    if (!file && /^(?:content|file):/i.test(rawSrc)) {
+                        file = await readNativeStorageUri(rawSrc).catch(() => null);
+                    }
                     if (!file && /^\/(?:sdcard|saf)(?:\/|$)/i.test(src)) {
                         try {
                             const { readNativeStorageFile } = await import("fl-ui/explorer/storage-bridge");
@@ -1494,9 +1579,44 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
         let opened = false;
         try {
+        const rawSource = String(source || "").trim();
         const normalizedSource = this.normalizeSourceUrl(source);
         if (!normalizedSource) {
             return false;
+        }
+        if (isNativeStorageAvailable()) {
+            const mapped = toNativeStorageVirtualPath(rawSource) || toNativeStorageVirtualPath(normalizedSource);
+            const doc = await loadCapacitorDocument({
+                uri: /^(?:content|file):/i.test(rawSource) ? rawSource : undefined,
+                path: mapped || (/^\/(?:sdcard|saf)(?:\/|$)/i.test(normalizedSource) ? normalizedSource : undefined)
+            });
+            if (!stillThisOpen()) return false;
+            if (doc) {
+                this.applyCapacitorLoadedDocument(doc, filename);
+                this.showMessage(filename || doc.name ? `Opened ${filename || doc.name}` : "Opened document");
+                opened = true;
+                return true;
+            }
+        }
+        if (/^(?:content|file):/i.test(rawSource)) {
+            try {
+                const file = await readNativeStorageUri(rawSource);
+                if (!stillThisOpen()) return false;
+                if (file instanceof File) {
+                    const display = toNativeStorageVirtualPath(rawSource) || rawSource;
+                    const ok = await this.paintSharedIngressFile(file, filename || file.name, display);
+                    if (!stillThisOpen()) return false;
+                    if (ok) {
+                        this.rememberOpenedWriteBack(rawSource, display);
+                        this.syncOpenedPath(display);
+                        this.showMessage(filename ? `Opened ${filename}` : "Opened markdown link");
+                        opened = true;
+                        return true;
+                    }
+                }
+            } catch {
+                /* /sdcard/ unwrap or fetch below */
+            }
         }
         if (/^\/(?:sdcard|saf)(?:\/|$)/i.test(normalizedSource)) {
             /* WHY: provide() re-encodes /sdcard/ and storage:read+Settings mid-await left Loading forever. */
@@ -1701,6 +1821,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
         const rawSource = this.rawSourceEl(rawElement);
         rawSource?.addEventListener("input", () => {
+            if (this.paintingRaw) return;
             this.rawEditorDirty = true;
         });
 
@@ -1935,6 +2056,37 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             return;
         }
         void (async () => {
+            /* INVARIANT: Capacitor never uses WebView `<input type=file>` — those Files are empty. */
+            if (isNativeStorageAvailable()) {
+                await ensureNativeStorageProvide();
+                const opened = await openNativeStorageDocument();
+                if (opened.cancelled) return;
+                const source = opened.virtualPath || opened.uri || null;
+                if (opened.file) {
+                    const ok = await this.ingestOpenedFile(opened.file, {
+                        virtualPath: source,
+                        filename: opened.name || opened.file.name
+                    });
+                    if (ok) {
+                        this.rememberOpenedWriteBack(opened.uri || null, opened.virtualPath || null);
+                        this.showMessage(`Opened ${opened.name || opened.file.name}`);
+                        return;
+                    }
+                }
+                if (opened.uri || opened.virtualPath) {
+                    const doc = await loadCapacitorDocument({
+                        uri: opened.uri,
+                        path: opened.virtualPath
+                    });
+                    if (doc) {
+                        this.applyCapacitorLoadedDocument(doc);
+                        this.showMessage(`Opened ${doc.name}`);
+                        return;
+                    }
+                }
+                this.showMessage("Could not open that file");
+                return;
+            }
             const picked = await pickMarkdownFile();
             if (!picked?.file) return;
             if (picked.sidecars.length) this.rememberSidecarFiles(picked.sidecars, picked.file);
@@ -2229,21 +2381,31 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private flushRawEditor(): string {
+        const cur = this.contentRef.value || "";
         const host = this.rawEditorEl();
         if (isRawEditorHost(host)) {
             const next = host.value;
-            if (next !== this.contentRef.value) this.contentRef.value = next;
+            /* INVARIANT: never replace a loaded buffer with an empty raw host. */
+            if (!String(next).trim() && String(cur).trim()) {
+                this.rawEditorDirty = false;
+                return cur;
+            }
+            if (next !== cur) this.contentRef.value = next;
             this.rawEditorDirty = false;
             return next;
         }
         const source = this.rawSourceEl();
         if (source) {
             const next = source instanceof HTMLTextAreaElement ? source.value : (source.textContent || "");
-            if (next !== this.contentRef.value) this.contentRef.value = next;
+            if (!String(next).trim() && String(cur).trim()) {
+                this.rawEditorDirty = false;
+                return cur;
+            }
+            if (next !== cur) this.contentRef.value = next;
             this.rawEditorDirty = false;
             return next;
         }
-        return this.contentRef.value || "";
+        return cur;
     }
 
     private suggestedSaveName(): string {
@@ -3057,6 +3219,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             return true;
         }
         const body = await file.text().catch(() => "");
+        if (!String(body || "").trim()) return false;
         this.ingestOpenedMarkdownBody(body, name || file.name, source ?? null);
         return true;
     }
@@ -3265,8 +3428,13 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private saveState(): void {
+        /* WHY: view mode must not flush a hidden empty raw host over loaded markdown. */
+        const flushed =
+            this.rawEditorDirty || this.rawMode ? this.flushRawEditor() : this.contentRef.value || "";
+        const content = String(flushed || "").trim()
+            || (this.userClearedDocument ? String(flushed || "") : this.lastGoodBody);
         this.stateManager.save({
-            content: this.flushRawEditor(),
+            content,
             filename: this.options.filename,
             source: this.persistableSource()
         });
@@ -3283,6 +3451,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.pathHistory = [];
         this.pathHistoryIndex = -1;
         this.rawEditorDirty = false;
+        this.userClearedDocument = true;
+        this.lastGoodBody = DEFAULT_CONTENT;
         this.rawMode = true;
         const raw = this.rawEditorEl();
         const renderTarget = this.queryViewerSlotted("[data-render-target]");
@@ -3766,7 +3936,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
         if (!this.visibilityOpenListener) {
             this.visibilityOpenListener = (): void => {
-                if (document.visibilityState === "visible") void this.pullCapacitorPendingOpen();
+                if (document.visibilityState === "visible") {
+                    void this.pullCapacitorPendingOpen().then(() => this.reloadNativeSourceIfEmpty());
+                }
             };
             document.addEventListener("visibilitychange", this.visibilityOpenListener);
             window.addEventListener("pageshow", this.visibilityOpenListener);
@@ -3779,7 +3951,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.flushPendingBinaryPreview();
         this.isViewVisible = true;
         this.refreshDocumentTheme();
-        void this.pullCapacitorPendingOpen();
+        void this.pullCapacitorPendingOpen().then(() => this.reloadNativeSourceIfEmpty());
     }
 
     private onUnmount(): void {
@@ -3835,10 +4007,25 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 return;
             }
             const { invokeCwsPlatformIPC } = await import("com/routing/native/cws-bridge");
+            const doc = await loadCapacitorDocument({ pending: true });
+            if (doc) {
+                this.applyCapacitorLoadedDocument(doc);
+                const stashedAt = Number(doc.stashedAt || 0) || 0;
+                await invokeCwsPlatformIPC({
+                    channel: "launcher:ack-share",
+                    payload: stashedAt ? { stashedAt } : {}
+                }).catch(() => null);
+                if (!this.binaryPreviewActive) {
+                    this.saveState();
+                    this.repaintMarkdown();
+                }
+                return;
+            }
             const peek = await invokeCwsPlatformIPC({ channel: "launcher:pending-share" });
             if (!peek?.ok) return;
             const echo = (peek.echo || peek) as {
                 text?: string;
+                content?: string;
                 title?: string;
                 name?: string;
                 mime?: string;
@@ -3850,7 +4037,10 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 stashedAt?: number | string;
             };
             const stashedAt = Number(echo.stashedAt || 0) || 0;
-            if (!echo.text && !echo.title && !echo.name && !echo.url && echo.hasFile == null) return;
+            const fileText = String(echo.content || "").trim();
+            if (!echo.text && !echo.title && !echo.name && !echo.url && echo.hasFile == null && !fileText) {
+                return;
+            }
             const flagged =
                 echo.hasFile === true || echo.hasFile === "true" || echo.hasFile === 1 || echo.hasFile === "1";
             const url = String(echo.url || echo.uri || "").trim();
@@ -3867,37 +4057,72 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 mime.startsWith("image/") ||
                 mime.startsWith("application/") ||
                 /\.(md|markdown|txt|pdf|png|jpe?g|gif|webp|html?)$/i.test(nameHint);
-            const pullFile = async (): Promise<File | null> => {
-                const read = await invokeCwsPlatformIPC({ channel: "launcher:read-share-file" });
-                const blob = (read.echo || read) as { data?: string; name?: string; mime?: string };
-                if (!blob?.data) return null;
-                return dataUrlToFile(
-                    blob.data,
-                    String(blob.name || echo.name || "shared.bin"),
-                    String(blob.mime || echo.mime || "application/octet-stream")
-                );
-            };
-            let file: File | null = wantFile ? await pullFile() : null;
-            if (wantFile && !file) {
-                await invokeCwsPlatformIPC({ channel: "launcher:restash-share-file" }).catch(() => null);
-                file = await pullFile();
-            }
             const source = (mapped && /^\/(?:sdcard|saf)(?:\/|$)/i.test(mapped))
                 ? mapped
                 : (local ? (mapped || url || null) : (url || null));
-            const filename = String(echo.name || echo.title || file?.name || "").trim();
+            const filename = String(echo.name || echo.title || "").trim();
             const text = String(echo.text || "").trim();
             /* INVARIANT: ack only after paint — share-intent used to delete the stash first. */
+            /* WHY: do not call read-share-file first — its data: URL stalled invoke and never reached echo.content. */
             let applied = false;
-            if (file) {
-                /* WHY: native Open-with/Share on this SKU must paint here — open-policy handoff leaves a blank viewer. */
-                applied = await this.paintSharedIngressFile(file, filename, source);
-                if (applied) this.rememberOpenedWriteBack(url, mapped);
+            if (fileText && !isAndroidLocalShareUri(fileText)) {
+                this.ingestOpenedMarkdownBody(fileText, filename, source);
+                applied = true;
+                this.rememberOpenedWriteBack(url, mapped);
             } else if (text && !isAndroidLocalShareUri(text)) {
                 this.ingestOpenedMarkdownBody(text, filename, source);
                 applied = true;
-            } else if (url && !local) {
-                applied = await this.openMarkdownFromUrl(url, filename);
+            } else if (wantFile) {
+                const pullFile = async (): Promise<File | null> => {
+                    const read = await invokeCwsPlatformIPC({ channel: "launcher:read-share-file" });
+                    const blob = (read.echo || read) as {
+                        data?: string;
+                        name?: string;
+                        mime?: string;
+                        text?: string;
+                        content?: string;
+                    };
+                    const inline = String(blob.content || blob.text || "").trim();
+                    if (inline && !isAndroidLocalShareUri(inline)) {
+                        return new File(
+                            [inline],
+                            String(blob.name || echo.name || "shared.txt"),
+                            { type: String(blob.mime || echo.mime || "text/plain") }
+                        );
+                    }
+                    if (!blob?.data) return null;
+                    return dataUrlToFile(
+                        blob.data,
+                        String(blob.name || echo.name || "shared.bin"),
+                        String(blob.mime || echo.mime || "application/octet-stream")
+                    );
+                };
+                let file: File | null = await pullFile();
+                if (!file) {
+                    await invokeCwsPlatformIPC({ channel: "launcher:restash-share-file" }).catch(() => null);
+                    file = await pullFile();
+                }
+                if (!file && url) {
+                    file = await readNativeStorageUri(url).catch(() => null);
+                }
+                if (!file && mapped && /^\/(?:sdcard|saf)(?:\/|$)/i.test(mapped)) {
+                    try {
+                        const { readNativeStorageFile } = await import("fl-ui/explorer/storage-bridge");
+                        file = await readNativeStorageFile(mapped);
+                    } catch {
+                        file = null;
+                    }
+                }
+                if (file) {
+                    applied = await this.paintSharedIngressFile(file, filename || file.name, source);
+                    if (applied) this.rememberOpenedWriteBack(url, mapped);
+                } else if (url || mapped) {
+                    applied = await this.openMarkdownFromUrl(mapped || url, filename);
+                    if (applied && url) this.rememberOpenedWriteBack(url, mapped);
+                }
+            } else if (url || mapped) {
+                applied = await this.openMarkdownFromUrl(mapped || url, filename);
+                if (applied && url) this.rememberOpenedWriteBack(url, mapped);
             }
             if (!applied) return;
             await invokeCwsPlatformIPC({
@@ -3922,8 +4147,24 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         if (handed?.content?.trim()) {
             this.ingestOpenedMarkdownBody(handed.content, handed.filename, handed.src);
         }
-        void this.pullCapacitorPendingOpen();
+        void this.pullCapacitorPendingOpen().then(() => this.reloadNativeSourceIfEmpty());
         console.log("[Viewer] Shown");
+    }
+
+    /** Saved empty body + `content://` / `/sdcard/` in the path bar after a failed Open-with. */
+    private async reloadNativeSourceIfEmpty(): Promise<void> {
+        const raw = String(this.pathInputValue() || this.sourceUrl || this.options.source || "").trim();
+        if (!raw || isIngressSourceToken(raw)) return;
+        const mapped = toNativeStorageVirtualPath(raw);
+        if (!/^(?:content|file):/i.test(raw) && !/^\/(?:sdcard|saf)(?:\/|$)/i.test(mapped || raw)) return;
+        const cur = String(this.contentRef.value || "").trim();
+        const empty =
+            !cur ||
+            cur === DEFAULT_CONTENT ||
+            cur.startsWith("# This is content") ||
+            cur.startsWith("# No content");
+        if (!empty) return;
+        await this.openMarkdownFromUrl(mapped || raw);
     }
 
     private onHide(): void {
