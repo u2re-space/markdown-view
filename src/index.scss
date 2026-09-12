@@ -344,6 +344,24 @@
             block-size: 100%;
             inline-size: 100%;
         }
+
+        .cw-view-viewer-shell[data-view-mode="hex"]:not(:has(.cw-view-viewer__slot-default)) .view-viewer,
+        .cw-view-viewer-shell[data-view-mode="hex"]:not(:has(.cw-view-viewer__slot-default)) .view-viewer__content {
+            flex: 1 1 auto;
+            min-block-size: 0;
+            min-inline-size: 0;
+        }
+
+        .cw-view-viewer-shell[data-view-mode="hex"] .cw-view-viewer__prose {
+            display: none !important;
+        }
+
+        .cw-view-viewer-shell cw-hex-editor:not([hidden]) {
+            flex: 1 1 auto;
+            min-block-size: 0;
+            min-inline-size: 0;
+            inline-size: 100%;
+        }
     }
 
     @layer components {
@@ -456,6 +474,25 @@
             flex: 0 0 auto;
             min-inline-size: 0;
             inline-size: 100%;
+        }
+
+        .view-viewer__tabs {
+            display: flex;
+            flex-wrap: nowrap;
+            align-items: center;
+            gap: 0.125rem;
+            min-block-size: 2rem;
+            padding: 0.15rem 0.75rem;
+            background: var(--view-toolbar-bg, var(--color-surface-container-high));
+            border-block-end: 1px solid color-mix(in oklab, var(--color-on-surface, var(--view-fg)) 10%, transparent);
+            box-sizing: border-box;
+            inline-size: 100%;
+            min-inline-size: 0;
+            overflow-inline: auto;
+        }
+
+        .view-viewer__tabs .view-viewer__btn[aria-selected="true"] {
+            font-weight: 600;
         }
 
         .view-viewer__pathbar {

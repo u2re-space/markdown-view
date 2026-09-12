@@ -59,10 +59,6 @@ export function createViewerToolbar(): HTMLElement {
             aria-label="Markdown document actions"
         >
             <div class="view-viewer__toolbar-left" data-toolbar-mode="edit" role="group" aria-label="Edit">
-                <button class="view-viewer__btn" data-action="toggle-raw" type="button" title="Switch to rendered view">
-                    <ui-icon class="view-viewer__toolbar-icon" icon="eye" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                    <span>ToView</span>
-                </button>
                 <button class="view-viewer__btn" data-action="select-all" type="button" title="Select all in the editor">
                     <ui-icon class="view-viewer__toolbar-icon" icon="selection-all" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
                     <span>SelectAll</span>
@@ -77,10 +73,6 @@ export function createViewerToolbar(): HTMLElement {
                 </button>
             </div>
             <div class="view-viewer__toolbar-left" data-toolbar-mode="view" role="group" aria-label="View">
-                <button class="view-viewer__btn" data-action="toggle-raw" type="button" title="Switch to source">
-                    <ui-icon class="view-viewer__toolbar-icon" icon="code" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
-                    <span>ToCode</span>
-                </button>
                 <button class="view-viewer__btn" data-action="copy-rendered" type="button" title="Copy rendered text">
                     <ui-icon class="view-viewer__toolbar-icon" icon="text-t" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
                     <span>CopyText</span>
@@ -137,10 +129,34 @@ export function createViewerToolbar(): HTMLElement {
     ` as HTMLElement;
 }
 
-/** Path row + action row. Explorer-like address chrome lives on the first row. */
+export function createViewerViewTabs(): HTMLElement {
+    return H`
+        <div
+            class="view-viewer__tabs"
+            data-viewer-tabs
+            role="tablist"
+            aria-label="Document view"
+        >
+            <button class="view-viewer__btn" data-action="set-view-mode" data-view-mode="raw" type="button" role="tab" aria-selected="false" title="Raw source">
+                <ui-icon class="view-viewer__toolbar-icon" icon="code" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                <span>raw/code</span>
+            </button>
+            <button class="view-viewer__btn" data-action="set-view-mode" data-view-mode="hex" type="button" role="tab" aria-selected="false" title="Hex bytes">
+                <ui-icon class="view-viewer__toolbar-icon" icon="hash" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                <span>hex/bin</span>
+            </button>
+            <button class="view-viewer__btn" data-action="set-view-mode" data-view-mode="interpret" type="button" role="tab" aria-selected="true" title="Rendered markdown or preview">
+                <ui-icon class="view-viewer__toolbar-icon" icon="file-md" icon-style="duotone" size="20" aria-hidden="true"></ui-icon>
+                <span>markdown / interpret</span>
+            </button>
+        </div>
+    ` as HTMLElement;
+}
+
+/** Path row + action row + view-mode tabs. */
 export function createViewerChrome(): HTMLElement {
     const chrome = H`<div class="view-viewer__chrome" data-viewer-chrome></div>` as HTMLElement;
-    chrome.append(createViewerPathBar(), createViewerToolbar());
+    chrome.append(createViewerPathBar(), createViewerToolbar(), createViewerViewTabs());
     return chrome;
 }
 

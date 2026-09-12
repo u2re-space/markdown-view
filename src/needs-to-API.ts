@@ -31,12 +31,13 @@ import { createViewState } from "views/types";
 import { createViewConstructor } from "views/registry";
 import { ViewerChannelAction, ExplorerChannelAction } from "views/apis/channel-actions";
 import { createViewerChrome } from "./ts/Toolbar";
-import { createRawEditorHost, isRawEditorHost } from "./ts/Viewer";
+import { bytesAreUtf8Text, bytesToLatin1, createHexEditorHost, createRawEditorHost, isHexEditorHost, isRawEditorHost, latin1ToBytes } from "./ts/Viewer";
 import {
     createNativeStorageDocument,
     ensureNativeStorageProvide,
     installNativeShowSaveFilePicker,
     isNativeStorageAvailable,
+    fileFromCapacitorDocument,
     loadCapacitorDocument,
     nativeUriFromSaveHandle,
     openNativeStorageDocument,
@@ -219,6 +220,19 @@ interface ViewerState {
 
 const STORAGE_KEY = "rs-viewer-state";
 const DEFAULT_CONTENT = `# This is content`;
+/** Interpret must not paint Latin1 as markdown. Image/PDF preview still uses interpret. */
+const HEX_ONLY_NAME = /\.(?:bin|dat|wasm|spv|zip|7z|gz|so|apk|exe|dll|class|o|woff2?)$/i;
+
+const latin1BytesOrNull = (text: string): Uint8Array | null => {
+    const raw = String(text || "");
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) {
+        const c = raw.charCodeAt(i);
+        if (c > 255) return null;
+        out[i] = c;
+    }
+    return out;
+};
 
 const toFetchableMarkdownUrl = (candidate: string): string => {
     try {
@@ -327,8 +341,12 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private boundMountRoot: string | null = null;
     private boundDirectory: FileSystemDirectoryHandle | null = null;
     /** INVARIANT: RAW `pre > code` is the draft; flush before copy / save / render. */
-    private rawMode = false;
+    private viewMode: "raw" | "hex" | "interpret" = "interpret";
     private rawEditorDirty = false;
+    private hexEditorDirty = false;
+    private lastGoodBytes = new Uint8Array(0);
+    /** WHY: hex / binary open must Save the byte buffer, not a UTF-8 re-encode. */
+    private preferByteSave = false;
     /** WHY: assignRaw + highlight fires `input` — must not mark dirty mid-paint. */
     private paintingRaw = false;
     private rememberedSaveHandle: FileSystemFileHandle | null = null;
@@ -432,6 +450,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         const savedBody = String(savedState?.content || "").trim();
         const initial = String(options.initialContent || savedBody || DEFAULT_CONTENT);
         this.lastGoodBody = initial.trim() ? initial : DEFAULT_CONTENT;
+        this.lastGoodBytes = new TextEncoder().encode(this.lastGoodBody);
         this.contentRef.value = this.lastGoodBody;
         if (!options.filename && savedState?.filename) this.options.filename = savedState.filename;
         if (!options.source && savedState?.source && !isIngressSourceToken(savedState.source)) {
@@ -466,7 +485,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.setupEventHandlers(rawTarget || undefined);
         this.syncOutlineToolbarState();
         this.syncToolbarDocumentTitle();
-        this.syncToolbarModeGroups(this.rawMode);
+        this.syncViewerViewMode();
 
         this.flushPendingBinaryPreview();
         if (!this.binaryPreviewActive && renderTarget) {
@@ -504,7 +523,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         }
         this.syncOutlineToolbarState();
         this.syncToolbarDocumentTitle();
-        this.syncToolbarModeGroups(this.rawMode);
+        this.syncViewerViewMode();
         this.refreshDocumentTheme();
         this.syncOpenedPath(this.sourceUrl);
     }
@@ -537,7 +556,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.setupEventHandlers(rawTarget || undefined);
         this.syncOutlineToolbarState();
         this.syncToolbarDocumentTitle();
-        this.syncToolbarModeGroups(this.rawMode);
+        this.syncViewerViewMode();
 
         this.flushPendingBinaryPreview();
         if (!this.binaryPreviewActive && renderTarget) {
@@ -586,6 +605,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         const next = String(content ?? "");
         if (!next.trim()) return;
         this.lastGoodBody = next;
+        this.lastGoodBytes = new TextEncoder().encode(next);
+        this.preferByteSave = false;
         this.userClearedDocument = false;
     }
 
@@ -612,11 +633,34 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.pendingBinaryPreview = null;
         if (!String(body || "").trim()) return;
         if (body.length > 0 && textIngressLooksCorrupt(body)) {
-            this.setContent(
-                "> This payload does not look like UTF-8 markdown (binary file or unsupported format).\n>\n> Open a `.md` / `.txt` file, paste as plain text, or attach binaries via Work Center.\n\n",
-                filename,
-                source
-            );
+            /* WHY: warning markdown used to replace lastGoodBytes — HEX then showed the warning. */
+            const name = String(filename || "");
+            const recovered = latin1BytesOrNull(body);
+            if (recovered && looksLikePreviewableBinary({ name })) {
+                void this.paintSharedIngressFile(
+                    new File([recovered], name || "file.bin", { type: "application/octet-stream" }),
+                    name,
+                    source ?? null
+                );
+                return;
+            }
+            if (recovered) {
+                this.adoptBytes(recovered);
+                if (filename) this.options.filename = filename;
+                if (source !== undefined && source !== null) {
+                    this.sourceUrl = this.normalizeSourceUrl(source);
+                    this.options.source = source;
+                    this.syncOpenedPath(this.sourceUrl);
+                }
+                this.viewMode = "hex";
+                this.applyViewSurfaces();
+                this.paintHexFromBytes();
+                this.showMessage("Use HEX");
+                return;
+            }
+            this.showMessage("Use HEX");
+            this.viewMode = "hex";
+            this.applyViewSurfaces();
             return;
         }
         this.setContent(body, filename, source ?? undefined);
@@ -625,12 +669,38 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.saveState();
     }
 
-    /** Capacitor `document:load` → editor buffer. */
+    /** Capacitor `document:load` → preview / hex bytes / markdown. */
     private applyCapacitorLoadedDocument(
-        doc: { content: string; name: string; uri?: string; virtualPath?: string },
+        doc: {
+            content: string;
+            name: string;
+            mime?: string;
+            hex?: string;
+            binary?: boolean;
+            uri?: string;
+            virtualPath?: string;
+        },
         filename?: string
     ): void {
         const source = doc.virtualPath || doc.uri || null;
+        const file = fileFromCapacitorDocument({
+            content: doc.content,
+            name: filename || doc.name,
+            mime: doc.mime || "application/octet-stream",
+            hex: doc.hex,
+            binary: doc.binary,
+            uri: doc.uri,
+            virtualPath: doc.virtualPath
+        });
+        const asBinary =
+            Boolean(doc.hex || doc.binary)
+            || looksLikePreviewableBinary({ name: filename || doc.name, type: doc.mime });
+        if (asBinary && file) {
+            void this.paintSharedIngressFile(file, filename || doc.name, source);
+            this.rememberOpenedWriteBack(doc.uri || null, doc.virtualPath || null);
+            if (source) this.syncOpenedPath(source);
+            return;
+        }
         this.ingestOpenedMarkdownBody(doc.content, filename || doc.name, source);
         this.rememberOpenedWriteBack(doc.uri || null, doc.virtualPath || null);
         if (source) this.syncOpenedPath(source);
@@ -721,7 +791,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 <div class="cw-view-viewer__prose markdown-body markdown-viewer-content result-content" data-render-target data-cw-viewer-prose></div>
             </div>
         ` as HTMLElement;
-        content.prepend(createRawEditorHost());
+        content.prepend(createHexEditorHost(), createRawEditorHost());
         const viewer = H`<div class="view-viewer"></div>` as HTMLElement;
         viewer.append(chrome, content);
         return H`<div class="cw-view-viewer-shell">${viewer}</div>` as HTMLElement;
@@ -767,18 +837,44 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         );
     }
 
-    /** Syncs raw/rendered layout: shell + content `data-raw` drives CSS (toolbar + raw vs slotted markdown). */
-    private syncViewerRawMode(raw: boolean): void {
+    /** Syncs raw/hex/interpret layout. `data-raw` stays for existing CSS; hex uses `data-view-mode`. */
+    private syncViewerViewMode(): void {
+        const raw = this.viewMode === "raw";
+        const hex = this.viewMode === "hex";
         const shell = this.element;
         if (shell?.classList.contains("cw-view-viewer-shell")) {
             shell.toggleAttribute("data-raw", raw);
+            if (hex) shell.setAttribute("data-view-mode", "hex");
+            else shell.removeAttribute("data-view-mode");
             const content = shell.querySelector("[data-viewer-content]");
             if (raw) content?.setAttribute("data-raw", "");
             else content?.removeAttribute("data-raw");
         }
         this.slotProjectingHost?.toggleAttribute("data-raw", raw);
-        this.slotProjectingHost?.querySelector("cw-markdown-view-frame")?.toggleAttribute("data-raw", raw);
-        this.syncToolbarModeGroups(raw);
+        if (hex) this.slotProjectingHost?.setAttribute("data-view-mode", "hex");
+        else this.slotProjectingHost?.removeAttribute("data-view-mode");
+        const frame = this.slotProjectingHost?.querySelector("cw-markdown-view-frame");
+        frame?.toggleAttribute("data-raw", raw);
+        if (hex) frame?.setAttribute("data-view-mode", "hex");
+        else frame?.removeAttribute("data-view-mode");
+        this.syncToolbarModeGroups(this.viewMode !== "interpret");
+        this.syncViewTabs();
+    }
+
+    private syncViewTabs(): void {
+        const roots: ParentNode[] = [];
+        if (this.element) roots.push(this.element);
+        if (this.slotProjectingHost) roots.push(this.slotProjectingHost);
+        const hexOnly = this.isHexOnlyDocument();
+        for (const root of roots) {
+            root.querySelectorAll<HTMLButtonElement>("[data-viewer-tabs] [data-action='set-view-mode']").forEach((btn) => {
+                const mode = btn.dataset.viewMode;
+                const on = mode === this.viewMode;
+                btn.setAttribute("aria-selected", on ? "true" : "false");
+                const disableInterpret = hexOnly && mode === "interpret" && !this.binaryPreviewActive;
+                btn.disabled = disableInterpret;
+            });
+        }
     }
 
     /* WHY: unlayered `.toolbar-left { display:flex }` beats layered hide; Capacitor
@@ -919,17 +1015,28 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 if (isRawEditorHost(rawTarget)) {
                     this.paintingRaw = true;
                     try {
-                        rawTarget.value = c;
-                        try {
-                            rawTarget.highlight(lang);
-                        } catch (error) {
-                            console.warn("[ViewerView] raw highlight skipped", error);
+                        /* PERF: binary Latin1 paints in idle chunks — do not join lastGoodBytes here. */
+                        /* INVARIANT: UTF-8 text leaving HEX must not paint as Latin1. */
+                        if (this.preferByteSave && !bytesAreUtf8Text(this.lastGoodBytes)) {
+                            rawTarget.setLatin1Bytes(this.lastGoodBytes);
+                        } else {
+                            rawTarget.value = this.preferByteSave
+                                ? new TextDecoder("utf-8").decode(this.lastGoodBytes)
+                                : c;
+                        }
+                        if (!this.preferByteSave && c.length <= 48_000) {
+                            try {
+                                rawTarget.highlight(lang);
+                            } catch (error) {
+                                console.warn("[ViewerView] raw highlight skipped", error);
+                            }
                         }
                     } finally {
                         this.paintingRaw = false;
                     }
                     return;
                 }
+                const rawPaint = this.preferByteSave ? bytesToLatin1(this.lastGoodBytes) : c;
                 let paintHost = rawTarget.matches("code")
                     ? rawTarget
                     : (rawTarget.querySelector(":scope > code") as HTMLElement | null);
@@ -945,7 +1052,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 }
                 this.paintingRaw = true;
                 try {
-                    if (paintHost.textContent !== c) paintHost.textContent = c;
+                    if (paintHost.textContent !== rawPaint) paintHost.textContent = rawPaint;
                     try {
                         /* WHY: raw </> is the whole document — a gutter overlay + RO
                          * rewrites line-height while the editor is hidden, then pumps height every frame. */
@@ -970,21 +1077,17 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             normalized = this.lastGoodBody || DEFAULT_CONTENT;
             content = normalized;
         }
-        if (!normalized.trim() && !this.rawMode) {
+        if (!normalized.trim() && this.viewMode === "interpret") {
             if (seq !== this.renderSeq) return;
             /* WHY: Capacitor WebView treated a blank contentRef as Empty document on every open. */
             if (isNativeStorageAvailable()) {
-                this.rawMode = true;
-                this.syncViewerRawMode(true);
-                this.setRawEditorVisible(true, rawTarget);
-                renderTarget.hidden = true;
+                this.viewMode = "raw";
+                this.applyViewSurfaces(rawTarget, renderTarget);
                 renderTarget.removeAttribute("aria-busy");
                 this.syncToolbarDocumentTitle();
                 return;
             }
-            this.syncViewerRawMode(false);
-            renderTarget.hidden = false;
-            this.setRawEditorVisible(false, rawTarget);
+            this.applyViewSurfaces(rawTarget, renderTarget);
             renderTarget.removeAttribute("aria-busy");
             renderTarget.setAttribute("data-md-state", "empty");
             renderTarget.innerHTML =
@@ -996,27 +1099,43 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         // Auto-switch to raw if it looks like HTML
         const container = this.element?.querySelector(".view-viewer__content");
         if (container && looksLikeHtmlDocument(content || "")) {
-            this.rawMode = true;
-            this.syncViewerRawMode(true);
-            this.setRawEditorVisible(true, rawTarget);
-            renderTarget.hidden = true;
+            this.viewMode = "raw";
+            this.applyViewSurfaces(rawTarget, renderTarget);
             this.syncToolbarDocumentTitle();
             endBusy();
             return;
         }
 
-        if (this.rawMode) {
-            this.syncViewerRawMode(true);
-            this.setRawEditorVisible(true, rawTarget);
-            renderTarget.hidden = true;
+        if (this.viewMode === "hex") {
+            this.applyViewSurfaces(rawTarget, renderTarget);
+            this.paintHexFromBytes();
             this.syncToolbarDocumentTitle();
             endBusy();
             return;
         }
 
-        this.syncViewerRawMode(false);
-        renderTarget.hidden = false;
-        this.setRawEditorVisible(false, rawTarget);
+        if (this.viewMode === "raw") {
+            this.applyViewSurfaces(rawTarget, renderTarget);
+            this.syncToolbarDocumentTitle();
+            endBusy();
+            return;
+        }
+
+        if (this.isHexOnlyDocument()) {
+            renderTarget.hidden = false;
+            this.setRawEditorVisible(false, rawTarget);
+            this.setHexEditorVisible(false);
+            this.syncViewerViewMode();
+            renderTarget.removeAttribute("aria-busy");
+            renderTarget.setAttribute("data-md-state", "hex-only");
+            renderTarget.innerHTML =
+                `<div class="view-viewer__md-empty" role="status">Use HEX</div>`;
+            this.syncToolbarDocumentTitle();
+            endBusy();
+            return;
+        }
+
+        this.applyViewSurfaces(rawTarget, renderTarget);
 
         // Paint a placeholder first, then do plugin work + marked off the critical stack.
         renderTarget.setAttribute("aria-busy", "true");
@@ -1765,18 +1884,13 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 case "select-all":
                     this.handleSelectAll();
                     break;
-                case "toggle-raw":
-                    this.rawMode = !this.rawMode;
-                    if (!this.rawMode) this.flushRawEditor();
-                    if (renderTarget) renderTarget.hidden = this.rawMode;
-                    this.setRawEditorVisible(this.rawMode, rawElement);
-                    this.syncViewerRawMode(this.rawMode);
-                    this.repaintMarkdown();
-                    if (this.rawMode) {
-                        const caret = this.rawSourceEl(rawElement);
-                        caret?.focus({ preventScroll: true });
+                case "set-view-mode": {
+                    const mode = String(button.dataset.viewMode || "");
+                    if (mode === "raw" || mode === "hex" || mode === "interpret") {
+                        this.setViewMode(mode);
                     }
                     break;
+                }
                 case "copy-rendered":
                     if (renderTarget) {
                         void this.handleCopyRendered(renderTarget);
@@ -1823,6 +1937,11 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         rawSource?.addEventListener("input", () => {
             if (this.paintingRaw) return;
             this.rawEditorDirty = true;
+        });
+
+        const hexHost = this.hexEditorEl();
+        hexHost?.addEventListener("input", () => {
+            this.hexEditorDirty = true;
         });
 
         const onSaveKey = (e: KeyboardEvent): void => {
@@ -2244,6 +2363,14 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private handleSelectAll(): void {
+        if (this.viewMode === "hex") {
+            const hex = this.hexEditorEl();
+            const ta = isHexEditorHost(hex) ? hex.sourceElement : null;
+            if (!ta) return;
+            ta.focus({ preventScroll: true });
+            ta.select();
+            return;
+        }
         const source = this.rawSourceEl();
         if (!source) return;
         source.focus({ preventScroll: true });
@@ -2258,6 +2385,20 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private insertTextInRawEditor(text: string): boolean {
+        if (this.viewMode === "hex") {
+            const hex = this.hexEditorEl();
+            const ta = isHexEditorHost(hex) ? hex.sourceElement : null;
+            if (!ta) return false;
+            ta.focus({ preventScroll: true });
+            const start = ta.selectionStart ?? ta.value.length;
+            const end = ta.selectionEnd ?? start;
+            ta.value = `${ta.value.slice(0, start)}${text}${ta.value.slice(end)}`;
+            const caret = start + text.length;
+            ta.setSelectionRange(caret, caret);
+            ta.dispatchEvent(new Event("input", { bubbles: true }));
+            this.hexEditorDirty = true;
+            return true;
+        }
         const source = this.rawSourceEl();
         if (!source) return false;
         source.focus({ preventScroll: true });
@@ -2291,8 +2432,30 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     private async handleCopy(): Promise<void> {
-        const selected = this.rawMode ? this.rawSelectionText() : "";
-        if (this.rawMode && !selected) {
+        if (this.viewMode === "hex") {
+            const hex = this.hexEditorEl();
+            const ta = isHexEditorHost(hex) ? hex.sourceElement : null;
+            const selected = ta ? ta.value.slice(ta.selectionStart ?? 0, ta.selectionEnd ?? 0) : "";
+            const raw = selected || (isHexEditorHost(hex) ? hex.value : "");
+            if (!raw.trim()) {
+                this.showMessage("No content to copy");
+                return;
+            }
+            try {
+                const ok = await Promise.race([
+                    writeClipboardText(raw),
+                    new Promise<boolean>((resolve) => globalThis.setTimeout(() => resolve(false), 3500))
+                ]);
+                if (!ok) throw new Error("Clipboard write failed");
+                this.showMessage(selected ? "Copied selection" : "Copied hex to clipboard");
+                this.options.onCopy?.(raw);
+            } catch {
+                this.showMessage("Failed to copy to clipboard");
+            }
+            return;
+        }
+        const selected = this.viewMode === "raw" ? this.rawSelectionText() : "";
+        if (this.viewMode === "raw" && !selected) {
             this.showMessage("Nothing selected");
             return;
         }
@@ -2365,6 +2528,126 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
     private rawEditorHostHidden(raw: HTMLElement | null | undefined): boolean {
         return !raw || raw.hidden;
+    }
+
+    private isHexOnlyDocument(): boolean {
+        if (this.binaryPreviewActive) return false;
+        const name = `${this.options.filename || ""} ${this.sourceUrl || ""}`.split(/[?#]/)[0];
+        if (HEX_ONLY_NAME.test(name)) return true;
+        return Boolean(this.lastGoodBytes?.includes(0));
+    }
+
+    private applyViewSurfaces(rawElement?: HTMLElement | null, renderTarget?: HTMLElement | null): void {
+        const render = renderTarget || this.queryViewerSlotted("[data-render-target]");
+        const raw = this.viewMode === "raw";
+        const hex = this.viewMode === "hex";
+        if (render) render.hidden = raw || hex;
+        this.setRawEditorVisible(raw, rawElement);
+        this.setHexEditorVisible(hex);
+        this.syncViewerViewMode();
+    }
+
+    private setViewMode(next: "raw" | "hex" | "interpret"): void {
+        if (next === "interpret" && this.isHexOnlyDocument() && !this.binaryPreviewActive) {
+            this.showMessage("Use HEX");
+            return;
+        }
+        if (next !== this.viewMode) this.commitActiveEditor();
+        this.viewMode = next;
+        const renderTarget = this.queryViewerSlotted("[data-render-target]");
+        this.applyViewSurfaces(this.rawEditorEl(), renderTarget);
+        if (next === "hex") this.paintHexFromBytes();
+        if (next === "raw") this.paintRawFromBytes();
+        if (next === "interpret") {
+            if (this.binaryPreviewActive) return;
+            this.repaintMarkdown();
+        } else if (next === "raw") {
+            const caret = this.rawSourceEl();
+            caret?.focus({ preventScroll: true });
+        } else {
+            const hex = this.hexEditorEl();
+            if (isHexEditorHost(hex)) hex.sourceElement?.focus({ preventScroll: true });
+        }
+    }
+
+    private commitActiveEditor(): void {
+        if (this.viewMode === "raw") {
+            const text = this.flushRawEditor();
+            /* INVARIANT: binary / hex SoT is lastGoodBytes. UTF-8 raw must not replace PNG bytes. */
+            if (this.preferByteSave && !bytesAreUtf8Text(this.lastGoodBytes)) {
+                if (this.rawEditorDirty) this.adoptBytes(latin1ToBytes(text));
+                return;
+            }
+            this.adoptTextBody(text);
+        } else if (this.viewMode === "hex") {
+            this.flushHexEditor();
+        }
+    }
+
+    private paintRawFromBytes(): void {
+        const raw = this.rawEditorEl();
+        if (isRawEditorHost(raw)) {
+            this.paintingRaw = true;
+            try {
+                if (this.preferByteSave && !bytesAreUtf8Text(this.lastGoodBytes)) {
+                    raw.setLatin1Bytes(this.lastGoodBytes);
+                } else {
+                    raw.value = this.preferByteSave
+                        ? new TextDecoder("utf-8").decode(this.lastGoodBytes)
+                        : this.lastGoodBody;
+                }
+            } finally {
+                this.paintingRaw = false;
+            }
+        }
+    }
+
+    private adoptTextBody(text: string): void {
+        const next = String(text ?? "");
+        if (next.trim()) {
+            this.lastGoodBody = next;
+            this.userClearedDocument = false;
+        } else if (this.userClearedDocument) {
+            this.lastGoodBody = next;
+        }
+        this.contentRef.value = next;
+        this.lastGoodBytes = new TextEncoder().encode(this.lastGoodBody);
+        this.preferByteSave = false;
+    }
+
+    private adoptBytes(bytes: Uint8Array): void {
+        this.lastGoodBytes = bytes;
+        this.lastGoodBody = new TextDecoder("utf-8").decode(bytes);
+        this.contentRef.value = this.lastGoodBody;
+        if (this.lastGoodBody.trim()) this.userClearedDocument = false;
+        this.preferByteSave = true;
+    }
+
+    private paintHexFromBytes(): void {
+        const host = this.hexEditorEl();
+        if (isHexEditorHost(host)) host.bytes = this.lastGoodBytes;
+    }
+
+    private hexEditorEl(): HTMLElement | null {
+        return this.queryViewerSlotted("[data-hex-target]") as HTMLElement | null;
+    }
+
+    private setHexEditorVisible(visible: boolean): void {
+        const el = this.hexEditorEl();
+        if (el) el.hidden = !visible;
+    }
+
+    private flushHexEditor(): Uint8Array {
+        const host = this.hexEditorEl();
+        if (isHexEditorHost(host)) {
+            const bytes = host.commitBytes();
+            /* WHY: leaving HEX used to mark any buffer binary — raw then showed UTF-8 as Latin1. */
+            if (bytesAreUtf8Text(bytes)) this.adoptTextBody(new TextDecoder("utf-8").decode(bytes));
+            else this.adoptBytes(bytes);
+            this.hexEditorDirty = false;
+            return bytes;
+        }
+        return this.lastGoodBytes;
     }
 
     private setRawEditorVisible(visible: boolean, rawElement?: HTMLElement | null): void {
@@ -2468,7 +2751,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     private async writeRelUnderDirectory(
         dir: FileSystemDirectoryHandle,
         rel: string,
-        content: string
+        content: string | Uint8Array
     ): Promise<FileSystemFileHandle | null> {
         const parts = String(rel || "").split(/[\\/]/).filter(Boolean);
         if (!parts.length) return null;
@@ -2490,13 +2773,14 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         return file;
     }
 
-    private async tryWriteVirtualPath(target: string, content: string, filename: string): Promise<boolean> {
+    private async tryWriteVirtualPath(target: string, content: string | Uint8Array, filename: string): Promise<boolean> {
         if (this.isRemoteSaveTarget(target) || this.isRootSaveTarget(target)) return false;
+        const mimeType = content instanceof Uint8Array ? "application/octet-stream" : "text/markdown";
         try {
             const native = toNativeStorageVirtualPath(target);
             if (native) {
                 if (this.isRootSaveTarget(native)) return false;
-                const ok = await writeNativeStorageFile(native, content, { mimeType: "text/markdown" });
+                const ok = await writeNativeStorageFile(native, content, { mimeType });
                 if (ok) {
                     this.sourceUrl = this.normalizeSourceUrl(native);
                     this.options.source = native;
@@ -2516,7 +2800,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                     return true;
                 }
             }
-            const file = new File([content], filename, { type: "text/markdown" });
+            const file = new File([content], filename, { type: mimeType });
             const ok = await writeFile(null, target, file);
             if (ok) {
                 this.sourceUrl = this.normalizeSourceUrl(target);
@@ -2535,28 +2819,35 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
      * `showSaveFilePicker` or Capacitor ACTION_CREATE_DOCUMENT.
      * INVARIANT: HTTPS, storage ROOT, and any in-place write error open a local picker.
      */
+    private saveBody(): string | Uint8Array {
+        this.commitActiveEditor();
+        if (this.preferByteSave) return this.lastGoodBytes;
+        return this.flushRawEditor();
+    }
+
     private async handleSave(): Promise<void> {
-        const content = this.flushRawEditor();
+        const content = this.saveBody();
         const filename = this.suggestedSaveName();
+        const notify = typeof content === "string" ? content : this.lastGoodBody;
         const pathRaw = this.pathInputValue() || this.sourceUrl || "";
         const remoteOrRoot = this.isRemoteSaveTarget(pathRaw) || this.isRootSaveTarget(pathRaw);
         try {
             const target = remoteOrRoot ? "" : this.resolveWritablePath(pathRaw, filename);
             if (target && await this.tryWriteVirtualPath(target, content, filename)) {
                 this.showMessage(`Saved ${filename}`);
-                this.options.onDownload?.(content, filename);
+                this.options.onDownload?.(notify, filename);
                 this.saveState();
                 return;
             }
             if (this.rememberedSaveHandle && await writeMarkdownToHandle(this.rememberedSaveHandle, content)) {
                 this.showMessage(`Saved ${filename}`);
-                this.options.onDownload?.(content, filename);
+                this.options.onDownload?.(notify, filename);
                 this.saveState();
                 return;
             }
             if (this.rememberedNativeWriteUri && await writeNativeStorageUri(this.rememberedNativeWriteUri, content)) {
                 this.showMessage(`Saved ${filename}`);
-                this.options.onDownload?.(content, filename);
+                this.options.onDownload?.(notify, filename);
                 this.saveState();
                 return;
             }
@@ -2567,17 +2858,21 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     }
 
     /** Local `showSaveFilePicker` / ACTION_CREATE_DOCUMENT after HTTPS, ROOT, or write failure. */
-    private async saveViaLocalPicker(content: string, filename: string): Promise<void> {
+    private async saveViaLocalPicker(content: string | Uint8Array, filename: string): Promise<void> {
         installNativeShowSaveFilePicker();
         if (isNativeStorageAvailable()) {
             try {
-                const created = await createNativeStorageDocument(filename, content);
+                const created = await createNativeStorageDocument(
+                    filename,
+                    content,
+                    content instanceof Uint8Array ? "application/octet-stream" : "text/markdown"
+                );
                 if (created.cancelled) return;
                 if (created.ok) {
                     if (created.uri) this.rememberedNativeWriteUri = created.uri;
                     this.rememberOpenedWriteBack(created.uri, created.uri);
                     this.showMessage(`Saved ${filename}`);
-                    this.options.onDownload?.(content, filename);
+                    this.options.onDownload?.(typeof content === "string" ? content : this.lastGoodBody, filename);
                     this.saveState();
                     return;
                 }
@@ -2606,13 +2901,14 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.showMessage(
             outcome.result === "shared" ? `Shared ${filename}` : `Saved ${filename}`
         );
-        this.options.onDownload?.(content, filename);
+        this.options.onDownload?.(typeof content === "string" ? content : this.lastGoodBody, filename);
         this.saveState();
     }
 
     private handleDownload(): void {
-        const content = this.flushRawEditor();
+        const content = this.saveBody();
         const filename = this.options.filename || `document-${Date.now()}.md`;
+        const notify = typeof content === "string" ? content : this.lastGoodBody;
         void saveMarkdownBlob(content, filename).then((result) => {
             if (result === "cancelled") return;
             if (result === "failed") {
@@ -2620,7 +2916,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 return;
             }
             this.showMessage(result === "shared" ? `Shared ${filename}` : `Saved ${filename}`);
-            this.options.onDownload?.(content, filename);
+            this.options.onDownload?.(notify, filename);
         });
     }
 
@@ -3016,7 +3312,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
                 this.showMessage("Clipboard is empty or access denied");
                 return;
             }
-            if (this.rawMode && files.length === 0 && text) {
+            if ((this.viewMode === "raw" || this.viewMode === "hex") && files.length === 0 && text) {
                 if (this.insertTextInRawEditor(text)) {
                     this.showMessage("Pasted at selection");
                     return;
@@ -3213,9 +3509,14 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         source?: string | null
     ): Promise<boolean> {
         const name = String(filename || file.name || "").trim();
-        if (this.looksLikeBinaryPreviewFile(file)) {
+        if (this.looksLikeBinaryPreviewFile(file) || !this.isTextLikeFile(file)) {
             this.showSharedBinaryPreview(file);
             if (name) this.options.filename = name;
+            if (source) {
+                this.sourceUrl = this.normalizeSourceUrl(source);
+                this.options.source = source;
+                this.syncOpenedPath(this.sourceUrl);
+            }
             return true;
         }
         const body = await file.text().catch(() => "");
@@ -3234,11 +3535,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
     ): Promise<boolean> {
         /* INVARIANT: Document SKU drop/paste paints here. Settings workcenter/explorer sinks have no host. */
         if (inferCwspSkuFromLocation() === "document") {
-            if (this.looksLikeBinaryPreviewFile(file) || this.isTextLikeFile(file)) {
-                return this.paintSharedIngressFile(file, opts?.filename, opts?.virtualPath ?? null);
-            }
-            this.showMessage(`Unsupported file type for viewer: ${file.name || file.type || "binary file"}`);
-            return false;
+            return this.paintSharedIngressFile(file, opts?.filename, opts?.virtualPath ?? null);
         }
         const settings: AppSettings = loadSettings();
         rememberOpenPolicyFromSettings(settings);
@@ -3345,7 +3642,13 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         } else {
             target.innerHTML = `<p>Opened ${safeName} (${file.size} bytes)</p><a href="${url}" download="${safeName}">Download</a>`;
         }
+        this.viewMode = "interpret";
+        this.applyViewSurfaces();
         this.showMessage(name);
+        void file.arrayBuffer().then((buf) => {
+            this.adoptBytes(new Uint8Array(buf));
+            if (this.viewMode === "hex") this.paintHexFromBytes();
+        });
     }
 
     private flushPendingBinaryPreview(): void {
@@ -3429,8 +3732,9 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
 
     private saveState(): void {
         /* WHY: view mode must not flush a hidden empty raw host over loaded markdown. */
+        if (this.hexEditorDirty || this.viewMode === "hex") this.flushHexEditor();
         const flushed =
-            this.rawEditorDirty || this.rawMode ? this.flushRawEditor() : this.contentRef.value || "";
+            this.rawEditorDirty || this.viewMode === "raw" ? this.flushRawEditor() : this.contentRef.value || "";
         const content = String(flushed || "").trim()
             || (this.userClearedDocument ? String(flushed || "") : this.lastGoodBody);
         this.stateManager.save({
@@ -3453,12 +3757,16 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
         this.rawEditorDirty = false;
         this.userClearedDocument = true;
         this.lastGoodBody = DEFAULT_CONTENT;
-        this.rawMode = true;
+        this.lastGoodBytes = new TextEncoder().encode(DEFAULT_CONTENT);
+        this.preferByteSave = false;
+        this.hexEditorDirty = false;
+        this.viewMode = "raw";
         const raw = this.rawEditorEl();
         const renderTarget = this.queryViewerSlotted("[data-render-target]");
         if (renderTarget) renderTarget.hidden = true;
         this.setRawEditorVisible(true, raw);
-        this.syncViewerRawMode(true);
+        this.setHexEditorVisible(false);
+        this.syncViewerViewMode();
         /* WHY: saveState → flushRawEditor would write the old draft back into contentRef. */
         if (isRawEditorHost(raw) && typeof (raw as { clearDraft?: () => void }).clearDraft === "function") {
             (raw as { clearDraft: () => void }).clearDraft();
@@ -4026,6 +4334,8 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             const echo = (peek.echo || peek) as {
                 text?: string;
                 content?: string;
+                hex?: string;
+                binary?: boolean;
                 title?: string;
                 name?: string;
                 mime?: string;
@@ -4038,7 +4348,7 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             };
             const stashedAt = Number(echo.stashedAt || 0) || 0;
             const fileText = String(echo.content || "").trim();
-            if (!echo.text && !echo.title && !echo.name && !echo.url && echo.hasFile == null && !fileText) {
+            if (!echo.text && !echo.title && !echo.name && !echo.url && echo.hasFile == null && !fileText && !echo.hex) {
                 return;
             }
             const flagged =
@@ -4065,7 +4375,19 @@ export const CwViewViewer = createViewConstructor(TAG, (Base: any)=>{
             /* INVARIANT: ack only after paint — share-intent used to delete the stash first. */
             /* WHY: do not call read-share-file first — its data: URL stalled invoke and never reached echo.content. */
             let applied = false;
-            if (fileText && !isAndroidLocalShareUri(fileText)) {
+            if (echo.hex || echo.binary) {
+                const shared = fileFromCapacitorDocument({
+                    content: "",
+                    hex: echo.hex,
+                    binary: true,
+                    name: filename || "file.bin",
+                    mime: echo.mime || "application/octet-stream"
+                });
+                if (shared) {
+                    applied = await this.paintSharedIngressFile(shared, filename, source);
+                    if (applied) this.rememberOpenedWriteBack(url, mapped);
+                }
+            } else if (fileText && !isAndroidLocalShareUri(fileText)) {
                 this.ingestOpenedMarkdownBody(fileText, filename, source);
                 applied = true;
                 this.rememberOpenedWriteBack(url, mapped);

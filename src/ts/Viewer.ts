@@ -7,10 +7,11 @@
  * of the viewer pipeline.
  */
 import { ensureViewportTracking } from "@fest-lib/dom";
+import { createHexEditorHost, isHexEditorHost, bytesAreUtf8Text, bytesToLatin1, latin1ToBytes } from "@fest-lib/fl-ui/markdown/hex-editor";
 import { createRawEditorHost, isRawEditorHost } from "@fest-lib/fl-ui/markdown/raw-editor";
 import { H } from "@fest-lib/lure";
 
-export { createRawEditorHost, isRawEditorHost };
+export { createHexEditorHost, isHexEditorHost, createRawEditorHost, isRawEditorHost, bytesAreUtf8Text, bytesToLatin1, latin1ToBytes };
 
 const FRAME_TAG = "cw-markdown-view-frame";
 
@@ -20,6 +21,9 @@ export function createMarkdownViewFrame(): HTMLElement {
         <div class="view-viewer__content" data-viewer-content>
             <div class="cw-view-viewer__slot-raw">
                 <slot name="raw"></slot>
+            </div>
+            <div class="cw-view-viewer__slot-hex">
+                <slot name="hex"></slot>
             </div>
             <div class="cw-view-viewer__slot-default">
                 <slot></slot>
@@ -48,6 +52,16 @@ export class MarkdownViewFrameElement extends HTMLElement {
             raw.slot = "raw";
         }
         if (leftover && leftover !== raw) leftover.remove();
+
+        let hex = self.querySelector(":scope > [data-hex-target]") as HTMLElement | null;
+        if (!isHexEditorHost(hex)) {
+            const next = createHexEditorHost({ slot: "hex" });
+            if (hex) hex.replaceWith(next);
+            else self.appendChild(next);
+            hex = next;
+        } else if (!hex.slot) {
+            hex.slot = "hex";
+        }
 
         let prose = self.querySelector(":scope > [data-render-target]") as HTMLElement | null;
         if (!prose) {
@@ -84,6 +98,7 @@ export class MarkdownViewFrameElement extends HTMLElement {
                 }
 
                 .cw-view-viewer__slot-raw,
+                .cw-view-viewer__slot-hex,
                 .cw-view-viewer__slot-default {
                     flex: 1 1 auto;
                     box-sizing: border-box;
@@ -92,12 +107,14 @@ export class MarkdownViewFrameElement extends HTMLElement {
                     overscroll-behavior: contain;
                 }
 
-                /* WHY: raw scroll lives inside cw-raw-editor shadow, not this slot. */
-                .cw-view-viewer__slot-raw {
+                /* WHY: raw/hex scroll lives inside the editor shadow, not this slot. */
+                .cw-view-viewer__slot-raw,
+                .cw-view-viewer__slot-hex {
                     overflow: hidden;
                 }
 
-                .cw-view-viewer__slot-raw > slot::slotted(cw-raw-editor) {
+                .cw-view-viewer__slot-raw > slot::slotted(cw-raw-editor),
+                .cw-view-viewer__slot-hex > slot::slotted(cw-hex-editor) {
                     display: block;
                     box-sizing: border-box;
                     width: 100%;
@@ -108,14 +125,16 @@ export class MarkdownViewFrameElement extends HTMLElement {
 
                 /* WHY: flex-basis:auto sizes to the draft; WebView then scrolls the
                  * whole view-viewer (toolbars). Pin the slot and fill it absolutely. */
-                :host-context(html[data-cwsp-native-shell="capacitor"]) .cw-view-viewer__slot-raw {
+                :host-context(html[data-cwsp-native-shell="capacitor"]) .cw-view-viewer__slot-raw,
+                :host-context(html[data-cwsp-native-shell="capacitor"]) .cw-view-viewer__slot-hex {
                     flex: 1 1 0%;
                     height: 0;
                     position: relative;
                     overflow: hidden;
                 }
 
-                :host-context(html[data-cwsp-native-shell="capacitor"]) .cw-view-viewer__slot-raw > slot::slotted(cw-raw-editor) {
+                :host-context(html[data-cwsp-native-shell="capacitor"]) .cw-view-viewer__slot-raw > slot::slotted(cw-raw-editor),
+                :host-context(html[data-cwsp-native-shell="capacitor"]) .cw-view-viewer__slot-hex > slot::slotted(cw-hex-editor) {
                     position: absolute;
                     top: 0;
                     left: 0;
@@ -155,9 +174,25 @@ export class MarkdownViewFrameElement extends HTMLElement {
 
                 .cw-view-viewer__slot-raw {
                     display: none !important;
+                    content-visibility: auto;
                 }
 
                 :host-context([data-raw]) .cw-view-viewer__slot-raw {
+                    display: flex !important;
+                    flex-direction: column;
+                }
+
+                .cw-view-viewer__slot-hex {
+                    display: none !important;
+                    content-visibility: auto;
+                }
+
+                :host-context([data-view-mode="hex"]) .cw-view-viewer__slot-default,
+                :host-context([data-view-mode="hex"]) .cw-view-viewer__slot-raw {
+                    display: none !important;
+                }
+
+                :host-context([data-view-mode="hex"]) .cw-view-viewer__slot-hex {
                     display: flex !important;
                     flex-direction: column;
                 }
