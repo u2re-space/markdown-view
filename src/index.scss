@@ -484,7 +484,7 @@
             min-block-size: 2rem;
             padding: 0.15rem 0.75rem;
             background: var(--view-toolbar-bg, var(--color-surface-container-high));
-            border-block-end: 1px solid color-mix(in oklab, var(--color-on-surface, var(--view-fg)) 10%, transparent);
+            border-block-end: 0px solid color-mix(in oklab, var(--color-on-surface, var(--view-fg)) 10%, transparent);
             box-sizing: border-box;
             inline-size: 100%;
             min-inline-size: 0;
@@ -509,7 +509,7 @@
             min-block-size: 2.125rem;
             padding: 0.2rem 0.5rem;
             background: var(--view-toolbar-bg, var(--color-surface-container-high));
-            border-block-end: 1px solid color-mix(in oklab, var(--color-on-surface, var(--view-fg)) 10%, transparent);
+            border-block-end: 0px solid color-mix(in oklab, var(--color-on-surface, var(--view-fg)) 10%, transparent);
             box-sizing: border-box;
             inline-size: 100%;
             min-inline-size: 0;
@@ -541,19 +541,22 @@
         .view-viewer__path-input {
             inline-size: 100%;
             min-inline-size: 0;
-            min-block-size: 1.75rem;
+            min-block-size: 2rem;
             padding: 0.25rem 0.55rem;
-            border: 1px solid color-mix(in oklab, var(--color-on-surface, var(--view-fg)) 16%, transparent);
+            border: 0px solid color-mix(in oklab, var(--color-on-surface, var(--view-fg)) 16%, transparent);
             border-radius: 0.4rem;
-            background: var(--color-surface, var(--view-bg));
+            background: var(--color-surface-container, var(--view-bg));
             color: var(--color-on-surface, var(--view-fg));
             font: inherit;
             font-size: var(--text-sm, 0.8125rem);
+            outline-offset: -2px;
+            box-shadow: none;
         }
 
         .view-viewer__path-input:focus {
             outline: 2px solid color-mix(in oklab, var(--color-primary, #007acc) 45%, transparent);
-            outline-offset: 1px;
+            outline-offset: -2px;
+            box-shadow: none;
         }
 
         .view-viewer__toolbar-center {
