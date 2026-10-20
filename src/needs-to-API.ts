@@ -83,7 +83,7 @@ const isIngressSourceToken = (value: string): boolean =>
     value === "pending";
 
 import { attachCodeHighlight, highlightCodeTree, languageFromFilename } from "@fest-lib/fl-ui/markdown/highlight";
-import { configureMarkdownRendering } from "@fest-lib/fl-ui/markdown/render";
+import { configureMarkdownRendering, MARKDOWN_SANITIZE_OPTIONS } from "@fest-lib/fl-ui/markdown/render";
 import type { AppSettings, MarkdownExtensionRule } from "core/other/config/SettingsTypes";
 
 let markedParserPromise: Promise<(markdown: string) => Promise<string>> | null = null;
@@ -99,13 +99,7 @@ const VIEWER_CLIPBOARD_READ_TEXT_MAX_BYTES = 2 * 1024 * 1024;
 const VIEWER_INGEST_BASE64_PROBE_MAX = 480_000;
 /** `innerText` on a huge rendered DOM is extremely expensive. */
 const VIEWER_MAX_RENDERED_COPY_CHARS = 600_000;
-const SANITIZE_OPTIONS = {
-    /** KaTeX `output: "mathml"` emits `<math>` + SVG; default DOMPurify HTML-only config strips them → raw LaTeX in the UI. */
-    USE_PROFILES: { html: true, mathMl: true, svg: true },
-    ADD_ATTR: ["data-language", "data-lang"],
-    FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "applet", "link", "meta", "base", "form", "noscript", "template"],
-    FORBID_CONTENTS: ["script", "style", "iframe", "object", "embed", "applet", "noscript", "template"]
-};
+const SANITIZE_OPTIONS = MARKDOWN_SANITIZE_OPTIONS;
 const DEFAULT_MARKDOWN_EXTENSION_FLAGS = "g";
 let viewerIconRuntimeInitialized = false;
 

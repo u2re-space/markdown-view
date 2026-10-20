@@ -4,13 +4,9 @@ import DOMPurify from 'dompurify';
 import { E, H, provide, defineElement, property } from "@fest-lib/lure";
 import UIElement from "fl-ui/base/UIElement";
 import { highlightCodeTree } from "@fest-lib/fl-ui/markdown/highlight";
-import { configureMarkdownRendering, renderSafeMarkdown } from "@fest-lib/fl-ui/markdown/render";
+import { configureMarkdownRendering, MARKDOWN_SANITIZE_OPTIONS, renderSafeMarkdown } from "@fest-lib/fl-ui/markdown/render";
 
-const SANITIZE_OPTIONS = {
-    USE_PROFILES: { html: true, mathMl: true, svg: true },
-    FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "applet", "link", "meta", "base", "form", "noscript", "template"],
-    FORBID_CONTENTS: ["script", "style", "iframe", "object", "embed", "applet", "noscript", "template"]
-};
+const SANITIZE_OPTIONS = MARKDOWN_SANITIZE_OPTIONS;
 
 configureMarkdownRendering();
 
