@@ -486,7 +486,7 @@
             align-items: center;
             gap: 0.125rem;
             min-block-size: 2rem;
-            padding: 0.15rem 0.75rem;
+            padding: 0.15rem 0.5rem;
             background: var(--view-toolbar-bg, var(--color-surface-container-high));
             border-block-end: 0px solid color-mix(in oklab, var(--color-on-surface, var(--view-fg)) 10%, transparent);
             box-sizing: border-box;
@@ -753,7 +753,20 @@
             background-color: var(--view-bg);
             color: contrast-color(var(--view-bg));
             block-size: stretch;
+            inline-size: stretch !important;
             flex-grow: 1;
+
+            --padding: 0.5rem;
+            --radius: 0.5rem;
+            
+            margin: 0rem;
+            margin-inline: 0rem;
+
+            @media screen {
+                clip-path: inset(var(--padding) round var(--radius));
+                padding-block: calc(var(--padding) + 0.25rem) !important;
+                padding-inline: calc(var(--padding) + 0.25rem) !important;
+            }
 
             &.dragover {
                 background-color: rgba(0, 122, 204, 0.05);
