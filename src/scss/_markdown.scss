@@ -560,7 +560,7 @@ $_h-sizes: (
                 font-size: 85%;
                 background-color: var(--md-bg-code);
                 border-radius: 6px;
-                color: contrast-color(var(--md-bg-code));
+                color: --u2-contrast-color(var(--md-bg-code));
             }
 
             pre {
@@ -572,7 +572,7 @@ $_h-sizes: (
                 font-size: 85%;
                 line-height: 1.45;
                 background-color: var(--md-bg-code);
-                color: contrast-color(var(--md-bg-code));
+                color: --u2-contrast-color(var(--md-bg-code));
                 border-radius: 6px;
                 inline-size: stretch;
                 max-inline-size: stretch;
@@ -585,7 +585,7 @@ $_h-sizes: (
                 overflow-block: hidden !important;
                 content-visibility: visible !important;
                 position: relative !important;
-                color: contrast-color(var(--md-bg-code));
+                color: --u2-contrast-color(var(--md-bg-code));
                 code,
                 tt {
                     @include code-in-pre;
@@ -629,17 +629,17 @@ $_h-sizes: (
                     font-weight: 600;
                     background-color: var(--md-bg-subtle);
                     block-size: max-content;
-                    color: contrast-color(var(--md-bg-subtle));
+                    color: --u2-contrast-color(var(--md-bg-subtle));
                 }
 
                 tr {
                     background-color: var(--md-bg-default);
                     border-block-start: 1px solid var(--md-border-subtle);
                     block-size: max-content;
-                    color: contrast-color(var(--md-bg-default));
+                    color: --u2-contrast-color(var(--md-bg-default));
                     &:nth-child(2n) {
                         background-color: var(--md-bg-subtle);
-                        color: contrast-color(var(--md-bg-subtle));
+                        color: --u2-contrast-color(var(--md-bg-subtle));
                     }
                 }
 
@@ -659,7 +659,7 @@ $_h-sizes: (
                 padding: 0;
                 border: 0;
                 background-color: var(--md-border-default);
-                color: contrast-color(var(--md-border-default));
+                color: --u2-contrast-color(var(--md-border-default));
                 &::before {
                     display: table;
                     content: "";
@@ -693,7 +693,7 @@ $_h-sizes: (
                 border: 1px solid var(--md-border-default);
                 border-radius: 6px;
                 box-shadow: inset 0 -1px 0 var(--md-border-default);
-                color: contrast-color(var(--md-bg-subtle));
+                color: --u2-contrast-color(var(--md-bg-subtle));
             }
 
             /* ── DL ── */
@@ -708,7 +708,7 @@ $_h-sizes: (
                     font-style: italic;
                     font-weight: 600;
                     color: var(--md-fg-default);
-                    color: contrast-color(var(--md-fg-default));
+                    color: --u2-contrast-color(var(--md-fg-default));
                 }
 
                 dd {
@@ -716,7 +716,7 @@ $_h-sizes: (
                     margin-block-end: 1rem;
                     margin-inline-start: 0;
                     color: var(--color-on-surface-variant, var(--md-fg-muted));
-                    color: contrast-color(var(--color-on-surface-variant, var(--md-fg-muted)));
+                    color: --u2-contrast-color(var(--color-on-surface-variant, var(--md-fg-muted)));
                 }
             }
 
